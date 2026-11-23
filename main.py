@@ -33,7 +33,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # === НАСТРОЙКИ ===
 TG_BOT_TOKEN = "9209605005:AAEy_QfMY6SCCwR_I7a7kFo-TdnW2yKdGKY"
 
-# Только эти Telegram ID могут менять фото приветствия, отвечать в поддержке и получать отчёты об оплатах
+# Только эти Telegram ID могут менять фото, выдавать/снимать VIP, отвечать в поддержке и получать отчёты об оплатах
 ADMIN_IDS = {1171395618}
 
 # Можно оставить пустым — просто отправь боту фото с подписью /setphoto
@@ -594,7 +594,7 @@ async def render_stock_screen(loc_filter: str = "all") -> tuple[str, InlineKeybo
     return title + body, kb
 
 
-# === ОБРАБОТЧИКИ КОМАНД МЕНЮ ===
+# === ОБРАБОТЧИКИ КОМАНД МЕНЮ И АДМИНКИ ===
 @router.message(F.photo, F.caption.in_({"/setphoto", "/photo"}))
 async def cmd_set_welcome_photo(message: Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -715,6 +715,43 @@ async def cmd_admin_reply(message: Message, command: CommandObject, bot: Bot):
         await message.answer(f"✅ Ответ отправлен пользователю <code>{target_id}</code>.")
     except Exception as e:
         await message.answer(f"❌ Не удалось отправить: {e}")
+
+
+@router.message(Command("givevip"))
+async def cmd_give_vip(message: Message, command: CommandObject, bot: Bot):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    arg = (command.args or "").strip()
+    if arg and not arg.isdigit():
+        await message.answer("Формат: <code>/givevip</code> (себе) или <code>/givevip ID</code>")
+        return
+    target_id = int(arg) if arg else message.from_user.id
+    await get_or_create_user(target_id)
+    await update_user(target_id, vip_level=2)
+    await message.answer(f"👑 Выдан максимальный VIP пользователю <code>{target_id}</code>.")
+    if target_id != message.from_user.id:
+        try:
+            await bot.send_message(
+                target_id,
+                "👑 <b>Администратор выдал тебе VIP-доступ навсегда!</b>\n\n"
+                "Теперь все уведомления приходят тебе первым в очереди, без задержки.",
+            )
+        except Exception:
+            pass
+
+
+@router.message(Command("delvip"))
+async def cmd_del_vip(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    arg = (command.args or "").strip()
+    if arg and not arg.isdigit():
+        await message.answer("Формат: <code>/delvip</code> (у себя) или <code>/delvip ID</code>")
+        return
+    target_id = int(arg) if arg else message.from_user.id
+    await get_or_create_user(target_id)
+    await update_user(target_id, vip_level=0)
+    await message.answer(f"👤 VIP снят у пользователя <code>{target_id}</code>.")
 
 
 # === ОБРАБОТЧИКИ КНОПОК ===
