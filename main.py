@@ -1,10 +1,12 @@
 import asyncio
+import html
 import itertools
 import os
 import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import aiohttp
 import aiosqlite
@@ -12,8 +14,16 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.filters import CommandObject, CommandStart
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+    Message,
+    PreCheckoutQuery,
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
@@ -21,8 +31,22 @@ if hasattr(sys.stdout, "reconfigure"):
 # === НАСТРОЙКИ ===
 TG_BOT_TOKEN = "9209605005:AAEy_QfMY6SCCwR_I7a7kFo-TdnW2yKdGKY"
 
-# Пока тестируешь, оставь пустым [], чтобы не дублировать старого бота.
-# Когда убедишься, что новый бот работает, впиши ["@wartrezlox", "@loqlux"] и останови старого.
+# Только эти Telegram ID могут менять фото приветствия и админские настройки
+ADMIN_IDS = {1171395618}
+
+# Можно оставить пустым — просто отправь боту фото с подписью /setphoto
+WELCOME_PHOTO = ""
+
+# Обязательный канал для подписки (бот должен быть там админом)
+REQUIRED_CHANNEL = "@wartrezlox"
+REQUIRED_CHANNEL_URL = "https://t.me/wartrezlox"
+
+# Экономика VIP и рефералки
+VIP_PRICE_STARS = 50
+REF_TARGET = 7
+FREE_USER_DELAY = 15  # задержка в секундах для обычных пользователей
+
+# Каналы для автопостинга (впиши ["@wartrezlox", "@loqlux"], когда решишь отключить старого бота)
 TG_CHANNELS = []
 
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
@@ -31,6 +55,8 @@ try:
 except OSError:
     DATA_DIR = "."
 DB_PATH = os.path.join(DATA_DIR, "bot.db")
+
+BOT_USERNAME = ""
 
 NEW_TOKEN_VARIANTS = [
     f"NzA3MjI4NDU5NjU0NDQ3MTM0.G{c1}Htq2.7GbGfciwH9{c2}{c3}fyXFrfVQ{c4}HgB6C1Y4UMoREJf88"
@@ -57,6 +83,8 @@ ALL_RARITIES = ["Divine", "Eternal", "Secret", "Cosmic", "Mythic", "Legendary"]
 ALL_LOCATIONS = [
     "Alien Planet",
     "Enchanted Forest",
+    "Cherry Blossom",
+    "Volcano",
     "Angels",
     "Demons",
     "Prehistoric",
@@ -93,7 +121,11 @@ async def init_db():
                 events_on INTEGER DEFAULT 1,
                 rarities TEXT DEFAULT 'Divine,Eternal',
                 locations TEXT DEFAULT 'ALL',
-                created_at INTEGER
+                created_at INTEGER,
+                vip_level INTEGER DEFAULT 0,
+                referrer_id INTEGER DEFAULT NULL,
+                ref_counted INTEGER DEFAULT 0,
+                ref_count INTEGER DEFAULT 0
             )
             """
         )
@@ -112,6 +144,42 @@ async def init_db():
                 spawn_ts INTEGER
             )
             """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        migrations = [
+            "ALTER TABLE users ADD COLUMN vip_level INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN ref_counted INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN ref_count INTEGER DEFAULT 0",
+        ]
+        for sql in migrations:
+            try:
+                await db.execute(sql)
+            except aiosqlite.OperationalError:
+                pass
+        await db.commit()
+
+
+async def get_setting(key: str) -> str:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else ""
+
+
+async def set_setting(key: str, value: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
         )
         await db.commit()
 
@@ -137,7 +205,74 @@ async def update_user(user_id: int, **fields):
         await db.commit()
 
 
+# === ПОДПИСКА И РЕФЕРАЛКА ===
+async def is_subscribed(bot: Bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        if member.status in ("member", "administrator", "creator"):
+            return True
+        if member.status == "restricted" and getattr(member, "is_member", False):
+            return True
+        return False
+    except Exception as e:
+        print(f"⚠️ Ошибка проверки подписки на {REQUIRED_CHANNEL}: {e}", flush=True)
+        return False
+
+
+async def try_credit_referral(bot: Bot, user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT referrer_id, ref_counted FROM users WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+
+        if not row or not row["referrer_id"] or row["ref_counted"]:
+            return
+
+        ref_id = row["referrer_id"]
+        await db.execute("UPDATE users SET ref_counted = 1 WHERE user_id = ?", (user_id,))
+        await db.execute(
+            "UPDATE users SET ref_count = COALESCE(ref_count, 0) + 1 WHERE user_id = ?",
+            (ref_id,),
+        )
+        async with db.execute(
+            "SELECT ref_count, vip_level FROM users WHERE user_id = ?",
+            (ref_id,),
+        ) as cur:
+            ref_row = await cur.fetchone()
+
+        upgraded = False
+        if ref_row and ref_row["ref_count"] >= REF_TARGET and (ref_row["vip_level"] or 0) == 0:
+            await db.execute("UPDATE users SET vip_level = 1 WHERE user_id = ?", (ref_id,))
+            upgraded = True
+        await db.commit()
+
+    if ref_row:
+        count = ref_row["ref_count"]
+        try:
+            if upgraded:
+                await bot.send_message(
+                    ref_id,
+                    f"🎉 <b>Поздравляем!</b> По твоей ссылке зашли {REF_TARGET} друзей — ты получил <b>бесплатный VIP</b>!\n\n"
+                    "Теперь все уведомления приходят тебе <b>мгновенно, без задержки</b>.",
+                )
+            elif count < REF_TARGET:
+                await bot.send_message(
+                    ref_id,
+                    f"👥 Друг запустил бота и подписался на канал!\n"
+                    f"Твой прогресс до VIP: <b>{count} из {REF_TARGET}</b>.",
+                )
+        except Exception:
+            pass
+
+
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+def clean_field(text: str) -> str:
+    return re.sub(r"[*_`]+", "", text).strip()
+
+
 def time_ago(ts: int) -> str:
     diff = max(0, int(time.time()) - ts)
     if diff < 60:
@@ -157,7 +292,39 @@ def parse_csv_set(raw: str) -> set[str]:
     return {x.strip() for x in raw.split(",") if x.strip()}
 
 
+def vip_badge(vip_level: int) -> str:
+    if vip_level == 2:
+        return "👑 VIP (Stars — максимальный приоритет)"
+    if vip_level == 1:
+        return "⚡ VIP (Реферальный — без задержки)"
+    return f"👤 Обычный (задержка {FREE_USER_DELAY} сек)"
+
+
+def progress_bar(count: int, total: int) -> str:
+    filled = min(count, total)
+    return "🟩" * filled + "⬜" * (total - filled)
+
+
+async def get_welcome_photo():
+    saved = await get_setting("welcome_photo")
+    if saved:
+        return saved
+    if WELCOME_PHOTO.strip():
+        return WELCOME_PHOTO.strip()
+    for path in ("welcome.jpg", "welcome.png", os.path.join(DATA_DIR, "welcome.jpg")):
+        if os.path.exists(path):
+            return FSInputFile(path)
+    return None
+
+
 async def safe_edit(cb: CallbackQuery, text: str, markup: InlineKeyboardMarkup):
+    if cb.message.photo:
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await cb.message.answer(text, reply_markup=markup, disable_web_page_preview=True)
+        return
     try:
         await cb.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
     except TelegramBadRequest:
@@ -165,13 +332,47 @@ async def safe_edit(cb: CallbackQuery, text: str, markup: InlineKeyboardMarkup):
 
 
 # === КЛАВИАТУРЫ И ЭКРАНЫ ===
+def welcome_text(subscribed: bool) -> str:
+    base = (
+        "🥚 <b>Добро пожаловать в Wartrez Стоки!</b>\n\n"
+        "Этот бот мгновенно уведомляет о редких яйцах (<b>Divine, Eternal, Secret</b> и др.) "
+        "и глобальных ивентах в <b>Steal An Egg</b>.\n\n"
+        "✨ <b>Внутри тебя ждёт:</b>\n"
+        "• Гибкие фильтры по редкостям и локациям\n"
+        "• История последних спавнов в один клик\n"
+        "• VIP-приоритет для мгновенных уведомлений\n\n"
+        "👤 <b>Создатель:</b> @wartrezlox"
+    )
+    if not subscribed:
+        base += f"\n\n🔒 Для доступа подпишись на канал {REQUIRED_CHANNEL} и нажми кнопку ниже."
+    return base
+
+
+def welcome_kb(subscribed: bool) -> InlineKeyboardMarkup:
+    if subscribed:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Открыть меню", callback_data="menu:main")],
+                [InlineKeyboardButton(text="📢 Канал создателя", url=REQUIRED_CHANNEL_URL)],
+            ]
+        )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Подписаться на @wartrezlox", url=REQUIRED_CHANNEL_URL)],
+            [InlineKeyboardButton(text="✅ Я подписался — Начать", callback_data="check:sub")],
+        ]
+    )
+
+
 def main_menu_text(user: dict) -> str:
     status = "🟢 Включены" if user["alerts_on"] else "🔴 Выключены"
     events = "🟢 Вкл" if user["events_on"] else "🔴 Выкл"
     rars = user["rarities"].replace(",", ", ") if user["rarities"] else "Не выбраны"
     locs = "Все локации" if user["locations"] == "ALL" else user["locations"].replace(",", ", ")
+    badge = vip_badge(user.get("vip_level") or 0)
     return (
         "🥚 <b>Меню уведомлений Steal An Egg</b>\n\n"
+        f"⭐ <b>Статус:</b> {badge}\n"
         f"🔔 <b>Уведомления:</b> {status}\n"
         f"💎 <b>Редкости:</b> {rars}\n"
         f"🏛 <b>Локации:</b> {locs}\n"
@@ -183,6 +384,7 @@ def main_menu_text(user: dict) -> str:
 def main_menu_kb(user: dict) -> InlineKeyboardMarkup:
     alert_btn = "🔕 Выключить уведомления" if user["alerts_on"] else "🔔 Включить уведомления"
     event_btn = "🎉 События: ВКЛ" if user["events_on"] else "🎉 События: ВЫКЛ"
+    vip_btn = "👑 Мой VIP и Рефералы" if (user.get("vip_level") or 0) > 0 else "👑 Получить VIP (без задержки)"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📦 Последний сток", callback_data="stock:all")],
@@ -190,10 +392,48 @@ def main_menu_kb(user: dict) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="💎 Редкости", callback_data="menu:rarities"),
                 InlineKeyboardButton(text="🏛 Локации", callback_data="menu:locations"),
             ],
+            [InlineKeyboardButton(text=vip_btn, callback_data="menu:vip")],
             [InlineKeyboardButton(text=event_btn, callback_data="toggle:events")],
             [InlineKeyboardButton(text=alert_btn, callback_data="toggle:alerts")],
         ]
     )
+
+
+def vip_menu_text(user: dict) -> str:
+    vip_level = user.get("vip_level") or 0
+    ref_count = user.get("ref_count") or 0
+    ref_link = f"https://t.me/{BOT_USERNAME}?start=r{user['user_id']}"
+    bar = progress_bar(ref_count, REF_TARGET)
+
+    return (
+        "👑 <b>VIP-доступ и Реферальная программа</b>\n\n"
+        f"<b>Твой статус:</b> {vip_badge(vip_level)}\n\n"
+        "<b>Что даёт VIP:</b>\n"
+        f"• Мгновенные уведомления без задержки ({FREE_USER_DELAY} сек)\n"
+        "• Приоритет в очереди рассылки — заходи на сервер первым\n\n"
+        "<b>Как получить VIP:</b>\n"
+        f"1️⃣ Купить мгновенно за <b>{VIP_PRICE_STARS} ⭐ Telegram Stars</b> (1-й приоритет навсегда)\n"
+        f"2️⃣ Бесплатно — пригласи <b>{REF_TARGET} друзей</b> по своей ссылке (друг засчитывается после подписки на {REQUIRED_CHANNEL})\n\n"
+        f"<b>Приглашено друзей:</b> {ref_count} из {REF_TARGET}\n"
+        f"{bar}\n\n"
+        f"🔗 <b>Твоя ссылка:</b>\n<code>{ref_link}</code>"
+    )
+
+
+def vip_menu_kb(user: dict) -> InlineKeyboardMarkup:
+    vip_level = user.get("vip_level") or 0
+    ref_link = f"https://t.me/{BOT_USERNAME}?start=r{user['user_id']}"
+    share_text = quote("Лови редкие Divine и Eternal яйца в Steal An Egg первым!")
+    share_url = f"https://t.me/share/url?url={quote(ref_link)}&text={share_text}"
+
+    rows = []
+    if vip_level < 2:
+        rows.append(
+            [InlineKeyboardButton(text=f"⭐ Купить VIP за {VIP_PRICE_STARS} Stars", callback_data="buy:vip")]
+        )
+    rows.append([InlineKeyboardButton(text="📤 Отправить ссылку другу", url=share_url)])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def rarities_kb(user: dict) -> InlineKeyboardMarkup:
@@ -242,24 +482,27 @@ async def render_stock_screen(loc_filter: str = "all") -> tuple[str, InlineKeybo
         async with db.execute(query, params) as cur:
             rows = [dict(r) for r in await cur.fetchall()]
 
-    title = "📦 <b>Последний сток</b>" + ("" if loc_filter == "all" else f" ({loc_filter})")
+    title = "📦 <b>Последний сток</b>" + ("" if loc_filter == "all" else f" ({html.escape(loc_filter)})")
     if not rows:
         body = "\n\nПока записей нет — как только появится спавн, он отобразится здесь."
     else:
         lines = []
         for r in rows:
             ago = time_ago(r["spawn_ts"])
+            loc_clean = html.escape(clean_field(r["location"]))
+            name_clean = html.escape(clean_field(r["name"]))
+            money_clean = html.escape(clean_field(r["money"]))
             if r["ctype"] == "egg":
-                rar = f"[{r['rarity']}] " if r["rarity"] else ""
+                rar = f"[{html.escape(r['rarity'])}] " if r["rarity"] else ""
                 lines.append(
-                    f"🥚 <b>{rar}{r['name']}</b> — {r['location']} | {r['money']} <i>({ago})</i>"
+                    f"🥚 <b>{rar}{name_clean}</b> — {loc_clean} | {money_clean} <i>({ago})</i>"
                 )
             elif r["ctype"] == "tidal":
-                lines.append(f"🌊 <b>Tidal Surge</b> — {r['location']} <i>({ago})</i>")
+                lines.append(f"🌊 <b>Tidal Surge</b> — {loc_clean} <i>({ago})</i>")
             elif r["ctype"] == "butterfly":
-                lines.append(f"🦋 <b>Бабочки</b> — {r['location']} <i>({ago})</i>")
+                lines.append(f"🦋 <b>Бабочки</b> — {loc_clean} <i>({ago})</i>")
             elif r["ctype"] == "market":
-                lines.append(f"🛒 <b>Slick Rick</b> — {r['location']} <i>({ago})</i>")
+                lines.append(f"🛒 <b>Slick Rick</b> — {loc_clean} <i>({ago})</i>")
         body = "\n\n" + "\n".join(lines)
 
     kb = InlineKeyboardMarkup(
@@ -279,14 +522,59 @@ async def render_stock_screen(loc_filter: str = "all") -> tuple[str, InlineKeybo
 
 
 # === ОБРАБОТЧИКИ TELEGRAM ===
-@router.message(CommandStart())
-async def cmd_start(message: Message):
-    user = await get_or_create_user(message.from_user.id)
+@router.message(F.photo, F.caption.in_({"/setphoto", "/photo"}))
+async def cmd_set_welcome_photo(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    fid = message.photo[-1].file_id
+    await set_setting("welcome_photo", fid)
     await message.answer(
-        main_menu_text(user),
-        reply_markup=main_menu_kb(user),
-        disable_web_page_preview=True,
+        "✅ <b>Приветственный баннер установлен!</b>\n\n"
+        "Нажми /start, чтобы проверить, как он выглядит."
     )
+
+
+@router.message(CommandStart())
+async def cmd_start(message: Message, command: CommandObject, bot: Bot):
+    uid = message.from_user.id
+    user = await get_or_create_user(uid)
+
+    args = command.args
+    if args and args.startswith("r") and args[1:].isdigit():
+        ref_id = int(args[1:])
+        if ref_id != uid and not user.get("referrer_id"):
+            await update_user(uid, referrer_id=ref_id)
+            user["referrer_id"] = ref_id
+
+    sub = await is_subscribed(bot, uid)
+    if sub:
+        await try_credit_referral(bot, uid)
+
+    caption = welcome_text(sub)
+    kb = welcome_kb(sub)
+    photo = await get_welcome_photo()
+
+    if photo:
+        try:
+            await message.answer_photo(photo=photo, caption=caption, reply_markup=kb)
+            return
+        except Exception as e:
+            print(f"⚠️ Не удалось отправить приветственное фото: {e}", flush=True)
+
+    await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "check:sub")
+async def cb_check_sub(cb: CallbackQuery, bot: Bot):
+    uid = cb.from_user.id
+    if not await is_subscribed(bot, uid):
+        await cb.answer(f"❌ Подписка на {REQUIRED_CHANNEL} не найдена!", show_alert=True)
+        return
+
+    await try_credit_referral(bot, uid)
+    user = await get_or_create_user(uid)
+    await safe_edit(cb, main_menu_text(user), main_menu_kb(user))
+    await cb.answer("✅ Подписка подтверждена!")
 
 
 @router.callback_query(F.data == "menu:main")
@@ -294,6 +582,52 @@ async def cb_main(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
     await safe_edit(cb, main_menu_text(user), main_menu_kb(user))
     await cb.answer()
+
+
+@router.callback_query(F.data == "menu:vip")
+async def cb_vip(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    await safe_edit(cb, vip_menu_text(user), vip_menu_kb(user))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "buy:vip")
+async def cb_buy_vip(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    if (user.get("vip_level") or 0) == 2:
+        await cb.answer("👑 У тебя уже активирован максимальный VIP!", show_alert=True)
+        return
+
+    await cb.message.answer_invoice(
+        title="👑 VIP-доступ навсегда",
+        description=(
+            f"Мгновенные уведомления без задержки ({FREE_USER_DELAY} сек) "
+            "и первый приоритет в очереди рассылки Steal An Egg."
+        ),
+        payload="vip_stars_50",
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(label="VIP-доступ навсегда", amount=VIP_PRICE_STARS)],
+    )
+    await cb.answer()
+
+
+@router.pre_checkout_query()
+async def on_pre_checkout(query: PreCheckoutQuery):
+    await query.answer(ok=True)
+
+
+@router.message(F.successful_payment)
+async def on_successful_payment(message: Message):
+    if message.successful_payment.invoice_payload == "vip_stars_50":
+        await update_user(message.from_user.id, vip_level=2)
+        user = await get_or_create_user(message.from_user.id)
+        await message.answer(
+            "👑 <b>Оплата прошла успешно! VIP активирован навсегда.</b>\n\n"
+            "Теперь все уведомления приходят тебе первым в очереди, без задержки.",
+            reply_markup=main_menu_kb(user),
+            disable_web_page_preview=True,
+        )
 
 
 @router.callback_query(F.data == "toggle:alerts")
@@ -407,11 +741,11 @@ def is_spam(m: dict) -> bool:
 def detect_rarity(title_text: str, raw: str, clean_raw: str) -> str:
     r_match = re.search(r"(?:Rarity|Tier):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
     if r_match:
-        val = r_match.group(1).strip().lower()
+        val = clean_field(r_match.group(1)).lower()
         for key, label in RARITIES_MAP:
             if key in val:
                 return label
-        return r_match.group(1).strip().capitalize()
+        return clean_field(r_match.group(1)).capitalize()
 
     searchable = re.sub(
         r"(?:Location|Where):\*?\*?\s*[^\n]+",
@@ -463,7 +797,7 @@ def parse_discord_message(m: dict, ctype: str) -> dict | None:
         for k in ("tidal surge", "flooded", "not a spawn alert", "possible eggs", "event alert")
     ):
         where_match = re.search(r"(?:Where|Location):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
-        loc = where_match.group(1).strip() if where_match else "Alien Planet"
+        loc = clean_field(where_match.group(1)) if where_match else "Alien Planet"
         return {
             "discord_msg_id": m["id"],
             "ctype": "tidal",
@@ -481,17 +815,17 @@ def parse_discord_message(m: dict, ctype: str) -> dict | None:
         egg_match = re.search(r"(?:Egg|Name):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
         if not egg_match:
             return None
-        egg_name = egg_match.group(1).strip()
+        egg_name = clean_field(egg_match.group(1))
         loc_match = re.search(r"(?:Location|Where):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
-        loc = loc_match.group(1).strip() if loc_match else "Unknown"
+        loc = clean_field(loc_match.group(1)) if loc_match else "Unknown"
         money_match = re.search(r"(?:Money|Value|Income):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
         if money_match:
-            money = money_match.group(1).strip()
+            money = clean_field(money_match.group(1))
         else:
             m_alt = re.search(r"\$\d+[a-zA-Z]*(?:/s|/sec)?", clean_raw, re.IGNORECASE)
             money = m_alt.group(0) if m_alt else "—"
         speed_match = re.search(r"(?:Recommended Speed|Speed):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
-        speed = speed_match.group(1).strip() if speed_match else "—"
+        speed = clean_field(speed_match.group(1)) if speed_match else "—"
         rarity = detect_rarity(title_text, raw, clean_raw)
         return {
             "discord_msg_id": m["id"],
@@ -508,7 +842,7 @@ def parse_discord_message(m: dict, ctype: str) -> dict | None:
     # Бабочки
     if ctype == "butterfly":
         where_match = re.search(r"Where:\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
-        loc = where_match.group(1).strip() if where_match else "Enchanted Forest"
+        loc = clean_field(where_match.group(1)) if where_match else "Enchanted Forest"
         return {
             "discord_msg_id": m["id"],
             "ctype": "butterfly",
@@ -543,8 +877,13 @@ def parse_discord_message(m: dict, ctype: str) -> dict | None:
 
 def format_post(item: dict) -> str:
     msk_time = fmt_msk(item["spawn_ts"])
+    name = html.escape(item["name"])
+    loc = html.escape(item["location"])
+    money = html.escape(item["money"])
+    speed = html.escape(item["speed"])
+    rarity = html.escape(item["rarity"])
     link_str = (
-        f'\n\n🔗 <a href="{item["link_url"]}">Присоединиться к игре</a>'
+        f'\n\n🔗 <a href="{html.escape(item["link_url"], quote=True)}">Присоединиться к игре</a>'
         if item["link_url"]
         else ""
     )
@@ -552,39 +891,35 @@ def format_post(item: dict) -> str:
     if item["ctype"] == "tidal":
         return (
             f"🌊 Затопление (TIDAL SURGE) началось!! -\n\n"
-            f"🏛 Локация: {item['location']}\n"
+            f"🏛 Локация: {loc}\n"
             f"💧 Инфо: Доступны редкие водные яйца\n"
             f"⏰ Заспавнилось: {msk_time}"
             f"{link_str}"
         )
     if item["ctype"] == "egg":
-        header = (
-            f"🔥 {item['rarity']} Egg появилось!! -"
-            if item["rarity"]
-            else "🔥 Новое Egg появилось!! -"
-        )
+        header = f"🔥 {rarity} Egg появилось!! -" if rarity else "🔥 Новое Egg появилось!! -"
         return (
             f"{header}\n\n"
-            f"🥚 Яйцо: {item['name']}\n"
-            f"🏛 Локация: {item['location']}\n"
+            f"🥚 Яйцо: {name}\n"
+            f"🏛 Локация: {loc}\n"
             f"⏰ Заспавнилось: {msk_time}\n"
-            f"💰 Приносит: {item['money']}\n"
-            f"🏃 Рек. скорость: {item['speed']}"
+            f"💰 Приносит: {money}\n"
+            f"🏃 Рек. скорость: {speed}"
             f"{link_str}"
         )
     if item["ctype"] == "butterfly":
         return (
             f"🦋 Ивент бабочек начался!! -\n\n"
-            f"🏛 Локация: {item['location']}\n"
+            f"🏛 Локация: {loc}\n"
             f"🎯 Инфо: Ловите бабочек сачком\n"
             f"⏰ Заспавнилось: {msk_time}"
             f"{link_str}"
         )
     return (
         f"🛒 Торговец Slick Rick прибыл!! -\n\n"
-        f"🏛 Локация: {item['location']}\n"
+        f"🏛 Локация: {loc}\n"
         f"📦 Товары: Контрабанда и мутации\n"
-        f"🏃 Рек. скорость: {item['speed']}\n"
+        f"🏃 Рек. скорость: {speed}\n"
         f"⏰ Заспавнилось: {msk_time}"
         f"{link_str}"
     )
@@ -598,10 +933,33 @@ async def delete_later(bot: Bot, chat_id: str, msg_id: int):
         pass
 
 
+def user_matches_item(u: dict, item: dict) -> bool:
+    if item["ctype"] == "egg":
+        user_rars = parse_csv_set(u["rarities"])
+        if item["rarity"] not in user_rars:
+            return False
+        if u["locations"] != "ALL":
+            user_locs = parse_csv_set(u["locations"])
+            if not any(loc.lower() in item["location"].lower() for loc in user_locs):
+                return False
+        return True
+    return bool(u["events_on"])
+
+
+async def send_batch(bot: Bot, users: list[dict], text: str):
+    for u in users:
+        try:
+            await bot.send_message(u["user_id"], text, disable_web_page_preview=True)
+        except TelegramForbiddenError:
+            await update_user(u["user_id"], alerts_on=0)
+        except Exception as e:
+            print(f"⚠️ Ошибка отправки {u['user_id']}: {e}", flush=True)
+        await asyncio.sleep(0.05)
+
+
 async def broadcast_item(bot: Bot, item: dict):
     text = format_post(item)
 
-    # 1. Публикация в каналы (только Eternal/Divine яйца + все события)
     if TG_CHANNELS and (item["ctype"] != "egg" or item["rarity"] in {"Divine", "Eternal"}):
         for ch in TG_CHANNELS:
             try:
@@ -610,32 +968,30 @@ async def broadcast_item(bot: Bot, item: dict):
             except Exception as e:
                 print(f"❌ Ошибка канала {ch}: {e}", flush=True)
 
-    # 2. Персональная рассылка пользователям по их фильтрам
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users WHERE alerts_on = 1") as cur:
-            users = [dict(r) for r in await cur.fetchall()]
+            all_users = [dict(r) for r in await cur.fetchall()]
 
-    for u in users:
-        if item["ctype"] == "egg":
-            user_rars = parse_csv_set(u["rarities"])
-            if item["rarity"] not in user_rars:
-                continue
-            if u["locations"] != "ALL":
-                user_locs = parse_csv_set(u["locations"])
-                if not any(loc.lower() in item["location"].lower() for loc in user_locs):
-                    continue
+    vip_paid, vip_ref, free_users = [], [], []
+    for u in all_users:
+        if not user_matches_item(u, item):
+            continue
+        lvl = u.get("vip_level") or 0
+        if lvl == 2:
+            vip_paid.append(u)
+        elif lvl == 1:
+            vip_ref.append(u)
         else:
-            if not u["events_on"]:
-                continue
+            free_users.append(u)
 
-        try:
-            await bot.send_message(u["user_id"], text, disable_web_page_preview=True)
-        except TelegramForbiddenError:
-            await update_user(u["user_id"], alerts_on=0)
-        except Exception as e:
-            print(f"⚠️ Ошибка отправки {u['user_id']}: {e}", flush=True)
-        await asyncio.sleep(0.05)
+    if vip_paid:
+        await send_batch(bot, vip_paid, text)
+    if vip_ref:
+        await send_batch(bot, vip_ref, text)
+    if free_users:
+        await asyncio.sleep(FREE_USER_DELAY)
+        await send_batch(bot, free_users, text)
 
 
 async def discord_watcher(bot: Bot):
@@ -660,7 +1016,6 @@ async def discord_watcher(bot: Bot):
             print("❌ Не подошёл ни один токен Discord!", flush=True)
             return
 
-        # Загружаем уже известные ID из базы, чтобы не слать дубли после перезапуска
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT discord_msg_id FROM spawns") as cur:
                 seen_ids = {row[0] for row in await cur.fetchall()}
@@ -709,10 +1064,12 @@ async def discord_watcher(bot: Bot):
                             )
                             await db.commit()
 
-                        # При самом первом заполнении пустой базы просто сохраняем историю без спама
                         if not first_fill:
-                            print(f"📢 Новый спавн: {item['name']} ({item['rarity'] or item['ctype']})", flush=True)
-                            await broadcast_item(bot, item)
+                            print(
+                                f"📢 Новый спавн: {item['name']} ({item['rarity'] or item['ctype']})",
+                                flush=True,
+                            )
+                            asyncio.create_task(broadcast_item(bot, item))
 
                 except Exception as e:
                     print(f"⚠️ Ошибка канала {cid}: {e}", flush=True)
@@ -723,13 +1080,17 @@ async def discord_watcher(bot: Bot):
 
 
 async def main():
+    global BOT_USERNAME
     await init_db()
     bot = Bot(token=TG_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    me = await bot.get_me()
+    BOT_USERNAME = me.username or ""
+
     dp = Dispatcher()
     dp.include_router(router)
 
     watcher_task = asyncio.create_task(discord_watcher(bot))
-    print("🚀 Бот-сток (Этап 1) запущен!", flush=True)
+    print(f"🚀 Бот @{BOT_USERNAME} запущен!", flush=True)
     try:
         await dp.start_polling(bot)
     finally:
