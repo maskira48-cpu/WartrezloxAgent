@@ -14,13 +14,15 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import CommandObject, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
+    MenuButtonCommands,
     Message,
     PreCheckoutQuery,
 )
@@ -31,7 +33,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # === НАСТРОЙКИ ===
 TG_BOT_TOKEN = "9209605005:AAEy_QfMY6SCCwR_I7a7kFo-TdnW2yKdGKY"
 
-# Только эти Telegram ID могут менять фото приветствия и админские настройки
+# Только эти Telegram ID могут менять фото приветствия, отвечать в поддержке и получать отчёты об оплатах
 ADMIN_IDS = {1171395618}
 
 # Можно оставить пустым — просто отправь боту фото с подписью /setphoto
@@ -44,7 +46,8 @@ REQUIRED_CHANNEL_URL = "https://t.me/wartrezlox"
 # Экономика VIP и рефералки
 VIP_PRICE_STARS = 50
 REF_TARGET = 7
-FREE_USER_DELAY = 15  # задержка в секундах для обычных пользователей
+FREE_USER_DELAY = 30       # реальная задержка в секундах для обычных пользователей
+VIP_EARLY_TEXT_SEC = 160   # сколько секунд отображается в тексте уведомления
 
 # Каналы для автопостинга (впиши ["@wartrezlox", "@loqlux"], когда решишь отключить старого бота)
 TG_CHANNELS = []
@@ -107,7 +110,43 @@ RARITIES_MAP = [
     ("common", "Common"),
 ]
 
+RARITY_SQUARES = {
+    "Divine": "🟨",
+    "Eternal": "🟪",
+    "Secret": "🟥",
+    "Cosmic": "🟦",
+    "Celestial": "🟦",
+    "Godly": "🟧",
+    "Mythic": "🟧",
+    "Legendary": "🟩",
+    "Epic": "🟪",
+    "Rare": "🟦",
+    "Uncommon": "🟩",
+    "Common": "⬜",
+}
+
 router = Router()
+
+
+def make_btn(
+    text: str,
+    *,
+    callback_data: str | None = None,
+    url: str | None = None,
+    style: str | None = None,
+) -> InlineKeyboardButton:
+    """Создаёт кнопку с поддержкой цветного стиля (success/primary/danger), если версия aiogram это поддерживает."""
+    kwargs = {"text": text}
+    if callback_data is not None:
+        kwargs["callback_data"] = callback_data
+    if url is not None:
+        kwargs["url"] = url
+    if style is not None:
+        try:
+            return InlineKeyboardButton(**kwargs, style=style)
+        except Exception:
+            pass
+    return InlineKeyboardButton(**kwargs)
 
 
 # === БАЗА ДАННЫХ ===
@@ -297,7 +336,7 @@ def vip_badge(vip_level: int) -> str:
         return "👑 VIP (Stars — максимальный приоритет)"
     if vip_level == 1:
         return "⚡ VIP (Реферальный — без задержки)"
-    return f"👤 Обычный (задержка {FREE_USER_DELAY} сек)"
+    return "👤 Обычный (с задержкой)"
 
 
 def progress_bar(count: int, total: int) -> str:
@@ -352,14 +391,14 @@ def welcome_kb(subscribed: bool) -> InlineKeyboardMarkup:
     if subscribed:
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 Открыть меню", callback_data="menu:main")],
-                [InlineKeyboardButton(text="📢 Канал создателя", url=REQUIRED_CHANNEL_URL)],
+                [make_btn("🚀 Открыть меню", callback_data="menu:main", style="primary")],
+                [make_btn("📢 Канал создателя", url=REQUIRED_CHANNEL_URL)],
             ]
         )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Подписаться на @wartrezlox", url=REQUIRED_CHANNEL_URL)],
-            [InlineKeyboardButton(text="✅ Я подписался — Начать", callback_data="check:sub")],
+            [make_btn("📢 Подписаться на @wartrezlox", url=REQUIRED_CHANNEL_URL, style="primary")],
+            [make_btn("✅ Я подписался — Начать", callback_data="check:sub", style="success")],
         ]
     )
 
@@ -382,19 +421,29 @@ def main_menu_text(user: dict) -> str:
 
 
 def main_menu_kb(user: dict) -> InlineKeyboardMarkup:
-    alert_btn = "🔕 Выключить уведомления" if user["alerts_on"] else "🔔 Включить уведомления"
-    event_btn = "🎉 События: ВКЛ" if user["events_on"] else "🎉 События: ВЫКЛ"
-    vip_btn = "👑 Мой VIP и Рефералы" if (user.get("vip_level") or 0) > 0 else "👑 Получить VIP (без задержки)"
+    alert_btn = (
+        make_btn("🔕 Выключить уведомления", callback_data="toggle:alerts", style="danger")
+        if user["alerts_on"]
+        else make_btn("🔔 Включить уведомления", callback_data="toggle:alerts", style="success")
+    )
+    event_btn = (
+        make_btn("🎉 События: ВКЛ", callback_data="toggle:events", style="success")
+        if user["events_on"]
+        else make_btn("🎉 События: ВЫКЛ", callback_data="toggle:events", style="danger")
+    )
+    vip_btn_text = (
+        "👑 Мой VIP и Рефералы" if (user.get("vip_level") or 0) > 0 else "👑 Получить VIP (без задержки)"
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📦 Последний сток", callback_data="stock:all")],
+            [make_btn("📦 Последний сток", callback_data="stock:all", style="primary")],
             [
-                InlineKeyboardButton(text="💎 Редкости", callback_data="menu:rarities"),
-                InlineKeyboardButton(text="🏛 Локации", callback_data="menu:locations"),
+                make_btn("💎 Редкости", callback_data="menu:rarities"),
+                make_btn("🏛 Локации", callback_data="menu:locations"),
             ],
-            [InlineKeyboardButton(text=vip_btn, callback_data="menu:vip")],
-            [InlineKeyboardButton(text=event_btn, callback_data="toggle:events")],
-            [InlineKeyboardButton(text=alert_btn, callback_data="toggle:alerts")],
+            [make_btn(vip_btn_text, callback_data="menu:vip")],
+            [event_btn],
+            [alert_btn],
         ]
     )
 
@@ -409,7 +458,7 @@ def vip_menu_text(user: dict) -> str:
         "👑 <b>VIP-доступ и Реферальная программа</b>\n\n"
         f"<b>Твой статус:</b> {vip_badge(vip_level)}\n\n"
         "<b>Что даёт VIP:</b>\n"
-        f"• Мгновенные уведомления без задержки ({FREE_USER_DELAY} сек)\n"
+        "• Мгновенные уведомления без задержки\n"
         "• Приоритет в очереди рассылки — заходи на сервер первым\n\n"
         "<b>Как получить VIP:</b>\n"
         f"1️⃣ Купить мгновенно за <b>{VIP_PRICE_STARS} ⭐ Telegram Stars</b> (1-й приоритет навсегда)\n"
@@ -429,11 +478,35 @@ def vip_menu_kb(user: dict) -> InlineKeyboardMarkup:
     rows = []
     if vip_level < 2:
         rows.append(
-            [InlineKeyboardButton(text=f"⭐ Купить VIP за {VIP_PRICE_STARS} Stars", callback_data="buy:vip")]
+            [make_btn(f"⭐ Купить VIP за {VIP_PRICE_STARS} Stars", callback_data="buy:vip", style="success")]
         )
-    rows.append([InlineKeyboardButton(text="📤 Отправить ссылку другу", url=share_url)])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="menu:main")])
+    rows.append([make_btn("📤 Отправить ссылку другу", url=share_url, style="primary")])
+    rows.append([make_btn("📄 Условия покупки VIP", callback_data="menu:terms")])
+    rows.append([make_btn("⬅️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def terms_text() -> str:
+    return (
+        "📄 <b>Условия покупки VIP</b>\n\n"
+        f"1. <b>Стоимость:</b> {VIP_PRICE_STARS} ⭐ (Telegram Stars), разовый платёж.\n"
+        "2. <b>Срок действия:</b> навсегда, на всё время работы бота.\n"
+        "3. <b>Что входит:</b> мгновенная отправка уведомлений без стандартной задержки "
+        "и первый приоритет в очереди рассылки.\n"
+        "4. <b>Активация:</b> происходит автоматически сразу после подтверждения оплаты Telegram.\n"
+        "5. <b>Возврат и помощь:</b> если оплата прошла, но VIP не включился или возникла ошибка — "
+        "напиши команду <code>/paysupport</code> и опиши проблему. Владелец бота (@wartrezlox) проверит "
+        "платёж и активирует доступ вручную либо оформит возврат звёзд."
+    )
+
+
+def terms_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [make_btn("👑 Перейти к VIP", callback_data="menu:vip", style="primary")],
+            [make_btn("⬅️ Назад в меню", callback_data="menu:main")],
+        ]
+    )
 
 
 def rarities_kb(user: dict) -> InlineKeyboardMarkup:
@@ -443,9 +516,9 @@ def rarities_kb(user: dict) -> InlineKeyboardMarkup:
         row = []
         for r in ALL_RARITIES[i : i + 2]:
             mark = "✅" if r in chosen else "❌"
-            row.append(InlineKeyboardButton(text=f"{mark} {r}", callback_data=f"rar:{r}"))
+            row.append(make_btn(f"{mark} {r}", callback_data=f"rar:{r}"))
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="menu:main")])
+    rows.append([make_btn("⬅️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -454,8 +527,8 @@ def locations_kb(user: dict) -> InlineKeyboardMarkup:
     chosen = set() if is_all else parse_csv_set(user["locations"])
     rows = [
         [
-            InlineKeyboardButton(
-                text=f"{'✅' if is_all else '⬜'} Все локации",
+            make_btn(
+                f"{'✅' if is_all else '⬜'} Все локации",
                 callback_data="loc:ALL",
             )
         ]
@@ -464,9 +537,9 @@ def locations_kb(user: dict) -> InlineKeyboardMarkup:
         row = []
         for loc in ALL_LOCATIONS[i : i + 2]:
             mark = "✅" if (is_all or loc in chosen) else "❌"
-            row.append(InlineKeyboardButton(text=f"{mark} {loc}", callback_data=f"loc:{loc}"))
+            row.append(make_btn(f"{mark} {loc}", callback_data=f"loc:{loc}"))
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="menu:main")])
+    rows.append([make_btn("⬅️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -508,20 +581,20 @@ async def render_stock_screen(loc_filter: str = "all") -> tuple[str, InlineKeybo
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🌍 Все", callback_data="stock:all"),
-                InlineKeyboardButton(text="👽 Alien", callback_data="stock:Alien"),
-                InlineKeyboardButton(text="🌲 Forest", callback_data="stock:Enchanted"),
+                make_btn("🌍 Все", callback_data="stock:all"),
+                make_btn("👽 Alien", callback_data="stock:Alien"),
+                make_btn("🌲 Forest", callback_data="stock:Enchanted"),
             ],
             [
-                InlineKeyboardButton(text="🔄 Обновить", callback_data=f"stock:{loc_filter}"),
-                InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"),
+                make_btn("🔄 Обновить", callback_data=f"stock:{loc_filter}", style="primary"),
+                make_btn("⬅️ Назад", callback_data="menu:main"),
             ],
         ]
     )
     return title + body, kb
 
 
-# === ОБРАБОТЧИКИ TELEGRAM ===
+# === ОБРАБОТЧИКИ КОМАНД МЕНЮ ===
 @router.message(F.photo, F.caption.in_({"/setphoto", "/photo"}))
 async def cmd_set_welcome_photo(message: Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -564,6 +637,87 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
     await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
 
 
+@router.message(Command("stock"))
+async def cmd_stock(message: Message, bot: Bot):
+    if not await is_subscribed(bot, message.from_user.id):
+        await message.answer(welcome_text(False), reply_markup=welcome_kb(False), disable_web_page_preview=True)
+        return
+    text, kb = await render_stock_screen("all")
+    await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+
+
+@router.message(Command("vip"))
+async def cmd_vip(message: Message, bot: Bot):
+    uid = message.from_user.id
+    if not await is_subscribed(bot, uid):
+        await message.answer(welcome_text(False), reply_markup=welcome_kb(False), disable_web_page_preview=True)
+        return
+    user = await get_or_create_user(uid)
+    await message.answer(vip_menu_text(user), reply_markup=vip_menu_kb(user), disable_web_page_preview=True)
+
+
+@router.message(Command("terms"))
+async def cmd_terms(message: Message):
+    await message.answer(terms_text(), reply_markup=terms_kb(), disable_web_page_preview=True)
+
+
+@router.message(Command("paysupport"))
+async def cmd_paysupport(message: Message, command: CommandObject, bot: Bot):
+    text = (command.args or "").strip()
+    if not text:
+        await message.answer(
+            "🆘 <b>Поддержка по оплате</b>\n\n"
+            "Напиши одним сообщением: команду и что случилось, например:\n"
+            "<code>/paysupport оплатил, но VIP не включился</code>\n\n"
+            "Я передам владельцу бота — он ответит тебе здесь, в боте."
+        )
+        return
+
+    uid = message.from_user.id
+    uname = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
+    admin_msg = (
+        "🆘 <b>Обращение в поддержку по оплате</b>\n\n"
+        f"👤 От: {html.escape(message.from_user.full_name)} ({uname})\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"💬 Сообщение:\n<blockquote>{html.escape(text)}</blockquote>\n\n"
+        f"Чтобы ответить пользователю через бота, напиши:\n"
+        f"<code>/reply {uid} твой ответ</code>"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, admin_msg, disable_web_page_preview=True)
+        except Exception as e:
+            print(f"⚠️ Ошибка отправки поддержки админу {admin_id}: {e}", flush=True)
+
+    await message.answer(
+        "✅ <b>Сообщение передано владельцу бота!</b>\n"
+        "Ожидай — ответ придёт прямо сюда, в этот чат."
+    )
+
+
+@router.message(Command("reply"))
+async def cmd_admin_reply(message: Message, command: CommandObject, bot: Bot):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    args = (command.args or "").strip()
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2 or not parts[0].isdigit():
+        await message.answer("Формат ответа: <code>/reply ID_ПОЛЬЗОВАТЕЛЯ текст ответа</code>")
+        return
+    target_id = int(parts[0])
+    reply_text = parts[1]
+    try:
+        await bot.send_message(
+            target_id,
+            f"💬 <b>Ответ от поддержки:</b>\n\n{html.escape(reply_text)}",
+            disable_web_page_preview=True,
+        )
+        await message.answer(f"✅ Ответ отправлен пользователю <code>{target_id}</code>.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить: {e}")
+
+
+# === ОБРАБОТЧИКИ КНОПОК ===
 @router.callback_query(F.data == "check:sub")
 async def cb_check_sub(cb: CallbackQuery, bot: Bot):
     uid = cb.from_user.id
@@ -591,6 +745,23 @@ async def cb_vip(cb: CallbackQuery):
     await cb.answer()
 
 
+@router.callback_query(F.data == "open:vip")
+async def cb_open_vip_new_msg(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    await cb.message.answer(
+        vip_menu_text(user),
+        reply_markup=vip_menu_kb(user),
+        disable_web_page_preview=True,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "menu:terms")
+async def cb_terms(cb: CallbackQuery):
+    await safe_edit(cb, terms_text(), terms_kb())
+    await cb.answer()
+
+
 @router.callback_query(F.data == "buy:vip")
 async def cb_buy_vip(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
@@ -601,7 +772,7 @@ async def cb_buy_vip(cb: CallbackQuery):
     await cb.message.answer_invoice(
         title="👑 VIP-доступ навсегда",
         description=(
-            f"Мгновенные уведомления без задержки ({FREE_USER_DELAY} сек) "
+            "Мгновенные уведомления без задержки "
             "и первый приоритет в очереди рассылки Steal An Egg."
         ),
         payload="vip_stars_50",
@@ -618,16 +789,31 @@ async def on_pre_checkout(query: PreCheckoutQuery):
 
 
 @router.message(F.successful_payment)
-async def on_successful_payment(message: Message):
-    if message.successful_payment.invoice_payload == "vip_stars_50":
-        await update_user(message.from_user.id, vip_level=2)
-        user = await get_or_create_user(message.from_user.id)
+async def on_successful_payment(message: Message, bot: Bot):
+    payment = message.successful_payment
+    if payment.invoice_payload == "vip_stars_50":
+        uid = message.from_user.id
+        await update_user(uid, vip_level=2)
+        user = await get_or_create_user(uid)
         await message.answer(
             "👑 <b>Оплата прошла успешно! VIP активирован навсегда.</b>\n\n"
             "Теперь все уведомления приходят тебе первым в очереди, без задержки.",
             reply_markup=main_menu_kb(user),
             disable_web_page_preview=True,
         )
+
+        uname = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
+        admin_text = (
+            "⭐ <b>Новая покупка VIP!</b>\n\n"
+            f"👤 Пользователь: {html.escape(message.from_user.full_name)} ({uname})\n"
+            f"🆔 ID: <code>{uid}</code>\n"
+            f"💰 Сумма: <b>{payment.total_amount} {payment.currency}</b>"
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, admin_text, disable_web_page_preview=True)
+            except Exception as e:
+                print(f"⚠️ Не удалось уведомить админа {admin_id}: {e}", flush=True)
 
 
 @router.callback_query(F.data == "toggle:alerts")
@@ -875,54 +1061,84 @@ def parse_discord_message(m: dict, ctype: str) -> dict | None:
     return None
 
 
-def format_post(item: dict) -> str:
+# === ФОРМАТИРОВАНИЕ УВЕДОМЛЕНИЙ ===
+def format_post(item: dict, delay_sec: int | None = None) -> str:
     msk_time = fmt_msk(item["spawn_ts"])
     name = html.escape(item["name"])
     loc = html.escape(item["location"])
     money = html.escape(item["money"])
     speed = html.escape(item["speed"])
-    rarity = html.escape(item["rarity"])
-    link_str = (
-        f'\n\n🔗 <a href="{html.escape(item["link_url"], quote=True)}">Присоединиться к игре</a>'
-        if item["link_url"]
-        else ""
-    )
+    rarity = item["rarity"]
+
+    vip_note = ""
+    if delay_sec is not None:
+        if item["ctype"] == "egg":
+            vip_note = f"\n\n⭐ <i>VIP узнали об этом яйце на {delay_sec} сек раньше</i>"
+        else:
+            vip_note = f"\n\n⭐ <i>VIP узнали об этом событии на {delay_sec} сек раньше</i>"
+
+    if item["ctype"] == "egg":
+        sq = RARITY_SQUARES.get(rarity, "⬜")
+        rar_label = html.escape(rarity.upper()) if rarity else "NEW EGG"
+        return (
+            "🔔 <b>Новое яйцо!</b>\n\n"
+            f"{sq} <b>{rar_label}</b>\n"
+            f"🥚 <b>{name}</b>\n\n"
+            "<blockquote>"
+            f"📍 Локация: 🏛 {loc}\n"
+            f"💰 Доход: {money}\n"
+            f"⚡ Скорость: {speed}"
+            "</blockquote>"
+            f"{vip_note}"
+        )
 
     if item["ctype"] == "tidal":
         return (
-            f"🌊 Затопление (TIDAL SURGE) началось!! -\n\n"
-            f"🏛 Локация: {loc}\n"
-            f"💧 Инфо: Доступны редкие водные яйца\n"
-            f"⏰ Заспавнилось: {msk_time}"
-            f"{link_str}"
+            "🔔 <b>Новое событие!</b>\n\n"
+            "🟦 <b>TIDAL SURGE</b>\n"
+            "🌊 <b>Затопление началось</b>\n\n"
+            "<blockquote>"
+            f"📍 Локация: 🏛 {loc}\n"
+            "💧 Инфо: Доступны редкие водные яйца\n"
+            f"⏰ Время: {msk_time}"
+            "</blockquote>"
+            f"{vip_note}"
         )
-    if item["ctype"] == "egg":
-        header = f"🔥 {rarity} Egg появилось!! -" if rarity else "🔥 Новое Egg появилось!! -"
-        return (
-            f"{header}\n\n"
-            f"🥚 Яйцо: {name}\n"
-            f"🏛 Локация: {loc}\n"
-            f"⏰ Заспавнилось: {msk_time}\n"
-            f"💰 Приносит: {money}\n"
-            f"🏃 Рек. скорость: {speed}"
-            f"{link_str}"
-        )
+
     if item["ctype"] == "butterfly":
         return (
-            f"🦋 Ивент бабочек начался!! -\n\n"
-            f"🏛 Локация: {loc}\n"
-            f"🎯 Инфо: Ловите бабочек сачком\n"
-            f"⏰ Заспавнилось: {msk_time}"
-            f"{link_str}"
+            "🔔 <b>Новое событие!</b>\n\n"
+            "🟪 <b>BUTTERFLY EVENT</b>\n"
+            "🦋 <b>Ивент бабочек начался</b>\n\n"
+            "<blockquote>"
+            f"📍 Локация: 🏛 {loc}\n"
+            "🎯 Инфо: Ловите бабочек сачком\n"
+            f"⏰ Время: {msk_time}"
+            "</blockquote>"
+            f"{vip_note}"
         )
+
     return (
-        f"🛒 Торговец Slick Rick прибыл!! -\n\n"
-        f"🏛 Локация: {loc}\n"
-        f"📦 Товары: Контрабанда и мутации\n"
-        f"🏃 Рек. скорость: {speed}\n"
-        f"⏰ Заспавнилось: {msk_time}"
-        f"{link_str}"
+        "🔔 <b>Новое событие!</b>\n\n"
+        "🟧 <b>BLACK MARKET</b>\n"
+        "🛒 <b>Торговец Slick Rick прибыл</b>\n\n"
+        "<blockquote>"
+        f"📍 Локация: 🏛 {loc}\n"
+        "📦 Товары: Контрабанда и мутации\n"
+        f"⚡ Скорость: {speed}\n"
+        f"⏰ Время: {msk_time}"
+        "</blockquote>"
+        f"{vip_note}"
     )
+
+
+def alert_kb(item: dict, is_vip: bool) -> InlineKeyboardMarkup | None:
+    rows = []
+    if item.get("link_url"):
+        rows.append([make_btn("🎮 Зайти в игру", url=item["link_url"], style="success")])
+    if not is_vip:
+        rows.append([make_btn("⭐ Хочу VIP", callback_data="open:vip")])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 async def delete_later(bot: Bot, chat_id: str, msg_id: int):
@@ -946,10 +1162,15 @@ def user_matches_item(u: dict, item: dict) -> bool:
     return bool(u["events_on"])
 
 
-async def send_batch(bot: Bot, users: list[dict], text: str):
+async def send_batch(bot: Bot, users: list[dict], text: str, markup: InlineKeyboardMarkup | None):
     for u in users:
         try:
-            await bot.send_message(u["user_id"], text, disable_web_page_preview=True)
+            await bot.send_message(
+                u["user_id"],
+                text,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
         except TelegramForbiddenError:
             await update_user(u["user_id"], alerts_on=0)
         except Exception as e:
@@ -958,16 +1179,24 @@ async def send_batch(bot: Bot, users: list[dict], text: str):
 
 
 async def broadcast_item(bot: Bot, item: dict):
-    text = format_post(item)
+    vip_text = format_post(item, delay_sec=None)
+    vip_markup = alert_kb(item, is_vip=True)
 
+    # 1. Каналы (только Eternal/Divine яйца + все события)
     if TG_CHANNELS and (item["ctype"] != "egg" or item["rarity"] in {"Divine", "Eternal"}):
         for ch in TG_CHANNELS:
             try:
-                msg = await bot.send_message(ch, text, disable_web_page_preview=True)
+                msg = await bot.send_message(
+                    ch,
+                    vip_text,
+                    reply_markup=vip_markup,
+                    disable_web_page_preview=True,
+                )
                 asyncio.create_task(delete_later(bot, ch, msg.message_id))
             except Exception as e:
                 print(f"❌ Ошибка канала {ch}: {e}", flush=True)
 
+    # 2. Персональная рассылка по приоритету
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users WHERE alerts_on = 1") as cur:
@@ -986,12 +1215,14 @@ async def broadcast_item(bot: Bot, item: dict):
             free_users.append(u)
 
     if vip_paid:
-        await send_batch(bot, vip_paid, text)
+        await send_batch(bot, vip_paid, vip_text, vip_markup)
     if vip_ref:
-        await send_batch(bot, vip_ref, text)
+        await send_batch(bot, vip_ref, vip_text, vip_markup)
     if free_users:
         await asyncio.sleep(FREE_USER_DELAY)
-        await send_batch(bot, free_users, text)
+        free_text = format_post(item, delay_sec=VIP_EARLY_TEXT_SEC)
+        free_markup = alert_kb(item, is_vip=False)
+        await send_batch(bot, free_users, free_text, free_markup)
 
 
 async def discord_watcher(bot: Bot):
@@ -1079,12 +1310,27 @@ async def discord_watcher(bot: Bot):
             await asyncio.sleep(3)
 
 
+async def setup_bot_menu(bot: Bot):
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Главное меню"),
+            BotCommand(command="stock", description="Показать последний сток"),
+            BotCommand(command="vip", description="VIP: алерты первыми"),
+            BotCommand(command="terms", description="Условия покупки VIP"),
+            BotCommand(command="paysupport", description="Поддержка по оплате"),
+        ]
+    )
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+
+
 async def main():
     global BOT_USERNAME
     await init_db()
     bot = Bot(token=TG_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     me = await bot.get_me()
     BOT_USERNAME = me.username or ""
+
+    await setup_bot_menu(bot)
 
     dp = Dispatcher()
     dp.include_router(router)
