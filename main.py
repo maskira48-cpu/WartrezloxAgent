@@ -33,7 +33,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # === НАСТРОЙКИ ===
 TG_BOT_TOKEN = "9209605005:AAEy_QfMY6SCCwR_I7a7kFo-TdnW2yKdGKY"
 
-# Только эти Telegram ID могут менять фото, выдавать/снимать VIP, отвечать в поддержке и получать отчёты об оплатах
+# Только эти Telegram ID имеют доступ к /stats, /setphoto, /givevip, /delvip, /reply и отчётам об оплатах
 ADMIN_IDS = {1171395618}
 
 # Можно оставить пустым — просто отправь боту фото с подписью /setphoto
@@ -60,6 +60,7 @@ except OSError:
 DB_PATH = os.path.join(DATA_DIR, "bot.db")
 
 BOT_USERNAME = ""
+MSK_TZ = timezone(timedelta(hours=3))
 
 NEW_TOKEN_VARIANTS = [
     f"NzA3MjI4NDU5NjU0NDQ3MTM0.G{c1}Htq2.7GbGfciwH9{c2}{c3}fyXFrfVQ{c4}HgB6C1Y4UMoREJf88"
@@ -192,6 +193,17 @@ async def init_db():
             )
             """
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount INTEGER,
+                currency TEXT,
+                created_at INTEGER
+            )
+            """
+        )
         migrations = [
             "ALTER TABLE users ADD COLUMN vip_level INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL",
@@ -219,6 +231,15 @@ async def set_setting(key: str, value: str):
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
+        )
+        await db.commit()
+
+
+async def record_payment(user_id: int, amount: int, currency: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO payments (user_id, amount, currency, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, amount, currency, int(time.time())),
         )
         await db.commit()
 
@@ -324,7 +345,7 @@ def time_ago(ts: int) -> str:
 
 
 def fmt_msk(ts: int) -> str:
-    return datetime.fromtimestamp(ts, timezone(timedelta(hours=3))).strftime("%H:%M МСК")
+    return datetime.fromtimestamp(ts, MSK_TZ).strftime("%H:%M МСК")
 
 
 def parse_csv_set(raw: str) -> set[str]:
@@ -368,6 +389,96 @@ async def safe_edit(cb: CallbackQuery, text: str, markup: InlineKeyboardMarkup):
         await cb.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
     except TelegramBadRequest:
         pass
+
+
+# === АНАЛИТИКА (АДМИН) ===
+async def render_stats_screen() -> tuple[str, InlineKeyboardMarkup]:
+    now_msk = datetime.now(MSK_TZ)
+    today_start = int(now_msk.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    week_start = int((now_msk - timedelta(days=7)).timestamp())
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN alerts_on = 1 THEN 1 ELSE 0 END), 0) AS active,
+                COALESCE(SUM(CASE WHEN alerts_on = 0 THEN 1 ELSE 0 END), 0) AS muted,
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS new_today,
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS new_week,
+                COALESCE(SUM(CASE WHEN vip_level = 2 THEN 1 ELSE 0 END), 0) AS vip_top,
+                COALESCE(SUM(CASE WHEN vip_level = 1 THEN 1 ELSE 0 END), 0) AS vip_ref,
+                COALESCE(SUM(CASE WHEN COALESCE(vip_level, 0) = 0 THEN 1 ELSE 0 END), 0) AS free_cnt,
+                COALESCE(SUM(COALESCE(ref_counted, 0)), 0) AS total_refs
+            FROM users
+            """,
+            (today_start, week_start),
+        ) as cur:
+            u_stats = await cur.fetchone()
+
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*) AS pay_cnt,
+                COALESCE(SUM(amount), 0) AS stars_total,
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN amount ELSE 0 END), 0) AS stars_today
+            FROM payments
+            """,
+            (today_start,),
+        ) as cur:
+            p_stats = await cur.fetchone()
+
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*) AS spawns_total,
+                COALESCE(SUM(CASE WHEN spawn_ts >= ? THEN 1 ELSE 0 END), 0) AS spawns_today
+            FROM spawns
+            """,
+            (today_start,),
+        ) as cur:
+            s_stats = await cur.fetchone()
+
+        async with db.execute(
+            "SELECT user_id, ref_count FROM users WHERE COALESCE(ref_count, 0) > 0 "
+            "ORDER BY ref_count DESC LIMIT 3"
+        ) as cur:
+            top_refs = await cur.fetchall()
+
+    total, active, muted, new_today, new_week, vip_top, vip_ref, free_cnt, total_refs = u_stats
+    pay_cnt, stars_total, stars_today = p_stats
+    spawns_total, spawns_today = s_stats
+
+    top_lines = ""
+    if top_refs:
+        items = [f"{i}. <code>{uid}</code> — {cnt} др." for i, (uid, cnt) in enumerate(top_refs, 1)]
+        top_lines = "\n🏆 <b>Топ рефоводов:</b>\n" + "\n".join(items) + "\n"
+
+    text = (
+        f"📊 <b>Аналитика @{BOT_USERNAME}</b>\n"
+        f"<i>Обновлено: {now_msk.strftime('%d.%m.%Y %H:%M МСК')}</i>\n\n"
+        "👥 <b>Пользователи:</b>\n"
+        f"• Всего: <b>{total}</b>\n"
+        f"• Активные алерты: <b>{active}</b> | Выкл/блок: <b>{muted}</b>\n"
+        f"• Новых сегодня: <b>+{new_today}</b> | За 7 дней: <b>+{new_week}</b>\n\n"
+        "👑 <b>VIP и монетизация:</b>\n"
+        f"• VIP (Stars/выданные): <b>{vip_top}</b>\n"
+        f"• VIP (Реферальные): <b>{vip_ref}</b>\n"
+        f"• Обычные: <b>{free_cnt}</b>\n"
+        f"• Оплат Stars: <b>{pay_cnt}</b> (всего <b>{stars_total} ⭐</b>, сегодня <b>+{stars_today} ⭐</b>)\n\n"
+        "🔗 <b>Рефералы:</b>\n"
+        f"• Подтверждённых приглашений: <b>{total_refs}</b>\n"
+        f"{top_lines}\n"
+        "🥚 <b>Спавны в базе:</b>\n"
+        f"• Всего: <b>{spawns_total}</b> | Сегодня: <b>{spawns_today}</b>"
+    )
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [make_btn("🔄 Обновить", callback_data="admin:stats", style="primary")],
+        ]
+    )
+    return text, kb
 
 
 # === КЛАВИАТУРЫ И ЭКРАНЫ ===
@@ -607,6 +718,23 @@ async def cmd_set_welcome_photo(message: Message):
     )
 
 
+@router.message(Command("stats", "stat"))
+async def cmd_admin_stats(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    text, kb = await render_stats_screen()
+    await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "admin:stats")
+async def cb_admin_stats(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return
+    text, kb = await render_stats_screen()
+    await safe_edit(cb, text, kb)
+    await cb.answer("Статистика обновлена")
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, bot: Bot):
     uid = message.from_user.id
@@ -831,6 +959,7 @@ async def on_successful_payment(message: Message, bot: Bot):
     if payment.invoice_payload == "vip_stars_50":
         uid = message.from_user.id
         await update_user(uid, vip_level=2)
+        await record_payment(uid, payment.total_amount, payment.currency)
         user = await get_or_create_user(uid)
         await message.answer(
             "👑 <b>Оплата прошла успешно! VIP активирован навсегда.</b>\n\n"
