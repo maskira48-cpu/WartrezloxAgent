@@ -1,1 +1,649 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Wartrez Стоки — VIP</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg: #0b0a14;
+      --card: #131322;
+      --card-inner: #1b1b2e;
+      --text: #ffffff;
+      --muted: #9898b0;
+      --gold: #ffb830;
+      --gold-2: #ff9524;
+      --pink: #e84393;
+      --cyan: #19d4ff;
+      --cyan-bg: #102a36;
+      --green: #4ade80;
+    }
 
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      margin: 0;
+      padding: 18px 14px calc(28px + env(safe-area-inset-bottom));
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background:
+        radial-gradient(circle at 50% 4%, rgba(255, 168, 45, 0.2), transparent 34%),
+        radial-gradient(circle at 85% 38%, rgba(168, 85, 247, 0.14), transparent 38%),
+        radial-gradient(circle at 15% 85%, rgba(25, 212, 255, 0.1), transparent 40%),
+        var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .wrap {
+      max-width: 440px;
+      margin: 0 auto;
+    }
+
+    /* Hero */
+    .hero {
+      text-align: center;
+      padding: 6px 8px 22px;
+      position: relative;
+    }
+
+    .egg-box {
+      width: 118px;
+      height: 118px;
+      margin: 0 auto 14px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .egg-glow {
+      position: absolute;
+      inset: 4px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255, 184, 48, 0.55) 0%, rgba(255, 100, 150, 0.18) 52%, transparent 72%);
+      filter: blur(12px);
+      animation: pulse 3s ease-in-out infinite;
+    }
+
+    .egg {
+      position: relative;
+      width: 78px;
+      height: 98px;
+      border-radius: 50% 50% 48% 48% / 60% 60% 40% 40%;
+      background: radial-gradient(circle at 34% 28%, #fffbe0 0%, #ffd54f 24%, #ff9f1c 62%, #d9468f 100%);
+      box-shadow:
+        inset -10px -14px 24px rgba(155, 28, 102, 0.45),
+        inset 6px 8px 16px rgba(255, 255, 255, 0.55),
+        0 10px 30px rgba(255, 165, 38, 0.35);
+      animation: float 3.2s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-6px); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.85; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.08); }
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 29px;
+      line-height: 1.15;
+      font-weight: 800;
+      letter-spacing: -0.4px;
+    }
+
+    .grad-word {
+      background: linear-gradient(90deg, #ffbd3b 0%, #ff5c8a 60%, #c850ff 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      display: inline-block;
+    }
+
+    .hero-sub {
+      margin: 0 auto;
+      max-width: 340px;
+      font-size: 14.5px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    /* Section labels */
+    .label {
+      font-size: 11.5px;
+      font-weight: 700;
+      letter-spacing: 1.4px;
+      color: #7c7c99;
+      text-transform: uppercase;
+      margin: 18px 4px 10px;
+    }
+
+    /* Queue card */
+    .queue-card {
+      background: rgba(20, 20, 36, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 8px;
+      margin-bottom: 22px;
+    }
+
+    .q-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 12px;
+      border-radius: 14px;
+      transition: background 0.2s;
+    }
+
+    .q-row + .q-row {
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .q-row.active {
+      background: rgba(124, 92, 255, 0.14);
+      border-top-color: transparent;
+    }
+
+    .q-row.active + .q-row {
+      border-top-color: transparent;
+    }
+
+    .q-ico {
+      font-size: 22px;
+      width: 30px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .q-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .q-title {
+      font-size: 15px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .you-badge {
+      display: none;
+      font-size: 10.5px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 7px;
+      background: linear-gradient(90deg, #6d5dfc, #9d50ff);
+      color: #fff;
+      letter-spacing: 0.4px;
+    }
+
+    .q-row.active .you-badge {
+      display: inline-block;
+    }
+
+    .q-desc {
+      font-size: 12.5px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .q-track {
+      width: 78px;
+      height: 7px;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .q-fill {
+      height: 100%;
+      border-radius: 99px;
+    }
+
+    .fill-paid {
+      width: 24%;
+      background: linear-gradient(90deg, #ffbe3b, #ff4d8d);
+    }
+
+    .fill-ref {
+      width: 100%;
+      background: linear-gradient(90deg, #19d4ff, #38ef7d);
+    }
+
+    .fill-free {
+      width: 100%;
+      background: rgba(152, 152, 176, 0.4);
+    }
+
+    /* Paid VIP Card */
+    .vip-paid-wrap {
+      position: relative;
+      padding: 1.5px;
+      border-radius: 22px;
+      background: linear-gradient(155deg, #ffb830 0%, #c850ff 55%, #5b21b6 100%);
+      box-shadow: 0 10px 35px rgba(255, 168, 45, 0.14);
+      margin-bottom: 16px;
+    }
+
+    .fast-badge {
+      position: absolute;
+      top: -12px;
+      right: 16px;
+      background: linear-gradient(90deg, #ffd15c, #ff962e);
+      color: #1c1204;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      padding: 5px 12px;
+      border-radius: 99px;
+      box-shadow: 0 4px 14px rgba(255, 168, 45, 0.4);
+      z-index: 2;
+    }
+
+    .vip-card {
+      background: linear-gradient(180deg, #171427 0%, #11101d 100%);
+      border-radius: 20.5px;
+      padding: 22px 18px 18px;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .card-title {
+      font-size: 19px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .price-tag {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--gold);
+      white-space: nowrap;
+    }
+
+    .card-desc {
+      font-size: 14px;
+      line-height: 1.45;
+      color: var(--muted);
+      margin: 0 0 16px;
+    }
+
+    .perks {
+      list-style: none;
+      margin: 0 0 18px;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+
+    .perks li {
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: #ececf5;
+    }
+
+    .chk {
+      color: var(--green);
+      font-weight: 900;
+      font-size: 15px;
+    }
+
+    .btn-buy {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      padding: 15px 16px;
+      font-size: 16px;
+      font-weight: 800;
+      color: #1b1102;
+      background: linear-gradient(90deg, #ffd154 0%, #ff9c2a 100%);
+      box-shadow: 0 6px 20px rgba(255, 165, 38, 0.32);
+      cursor: pointer;
+      transition: transform 0.12s ease, opacity 0.15s ease;
+    }
+
+    .btn-buy:active {
+      transform: scale(0.98);
+    }
+
+    .btn-buy.owned {
+      background: rgba(74, 222, 128, 0.16);
+      color: #4ade80;
+      border: 1px solid rgba(74, 222, 128, 0.35);
+      box-shadow: none;
+      cursor: default;
+    }
+
+    .fine-print {
+      margin: 12px 2px 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #787894;
+      text-align: center;
+    }
+
+    /* Free VIP Card */
+    .vip-free-card {
+      background: linear-gradient(180deg, #131626 0%, #10121e 100%);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 22px;
+      padding: 20px 18px 18px;
+    }
+
+    .free-tag {
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--cyan);
+      white-space: nowrap;
+    }
+
+    .progress-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13.5px;
+      margin-bottom: 9px;
+    }
+
+    .progress-head span:first-child {
+      color: #d6d6e8;
+      font-weight: 600;
+    }
+
+    .progress-count {
+      color: var(--cyan);
+      font-weight: 800;
+    }
+
+    .segments {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+
+    .seg {
+      height: 8px;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .seg.filled {
+      background: linear-gradient(90deg, #19d4ff, #42e8e0);
+      box-shadow: 0 0 10px rgba(25, 212, 255, 0.45);
+    }
+
+    .ref-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #0b0c16;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 14px;
+      padding: 6px 6px 6px 12px;
+      margin-bottom: 10px;
+    }
+
+    .ref-url {
+      flex: 1;
+      font-size: 13px;
+      color: #b7b7cf;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: all;
+    }
+
+    .btn-copy {
+      border: none;
+      border-radius: 10px;
+      padding: 9px 13px;
+      font-size: 13px;
+      font-weight: 700;
+      background: rgba(25, 212, 255, 0.14);
+      color: var(--cyan);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .btn-copy:active {
+      transform: scale(0.96);
+    }
+
+    .btn-share {
+      width: 100%;
+      border: 1px solid rgba(25, 212, 255, 0.32);
+      border-radius: 14px;
+      padding: 13px 16px;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--cyan);
+      background: rgba(25, 212, 255, 0.1);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-share:active {
+      transform: scale(0.98);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div class="egg-box">
+        <div class="egg-glow"></div>
+        <div class="egg"></div>
+      </div>
+      <h1>Узнавай о редких яйцах <span class="grad-word">первым</span></h1>
+      <p class="hero-sub">
+        Алерты приходят людям по очереди. Кто в начале очереди — тот первым бежит за яйцом 🥚
+      </p>
+    </div>
+
+    <div class="label">Кто получает алерт раньше</div>
+    <div class="queue-card">
+      <div class="q-row" id="row-vip2">
+        <div class="q-ico">💎</div>
+        <div class="q-info">
+          <div class="q-title">Платный VIP <span class="you-badge">ТЫ</span></div>
+          <div class="q-desc">самым первым, сразу после спавна</div>
+        </div>
+        <div class="q-track"><div class="q-fill fill-paid"></div></div>
+      </div>
+
+      <div class="q-row" id="row-vip1">
+        <div class="q-ico">⭐</div>
+        <div class="q-info">
+          <div class="q-title">Бесплатный VIP <span class="you-badge">ТЫ</span></div>
+          <div class="q-desc">сразу после платных VIP</div>
+        </div>
+        <div class="q-track"><div class="q-fill fill-ref"></div></div>
+      </div>
+
+      <div class="q-row" id="row-vip0">
+        <div class="q-ico">👤</div>
+        <div class="q-info">
+          <div class="q-title">Без VIP <span class="you-badge">ТЫ</span></div>
+          <div class="q-desc">в самом конце очереди</div>
+        </div>
+        <div class="q-track"><div class="q-fill fill-free"></div></div>
+      </div>
+    </div>
+
+    <div class="label">Выбери свой VIP</div>
+
+    <div class="vip-paid-wrap">
+      <div class="fast-badge">⚡ САМЫЙ БЫСТРЫЙ</div>
+      <div class="vip-card">
+        <div class="card-head">
+          <div class="card-title">💎 Платный VIP</div>
+          <div class="price-tag"><span id="price-top">50</span> ⭐</div>
+        </div>
+        <p class="card-desc">
+          Алерты приходят тебе раньше всех — даже раньше бесплатных VIP.
+        </p>
+        <ul class="perks">
+          <li><span class="chk">✓</span> Самое начало очереди</li>
+          <li><span class="chk">✓</span> Платишь один раз — VIP навсегда</li>
+          <li><span class="chk">✓</span> Оплата звёздами прямо в Telegram</li>
+        </ul>
+        <button class="btn-buy" id="btn-buy">Купить за <span id="price-btn">50</span> ⭐</button>
+        <p class="fine-print">
+          Нажимая «Купить», ты принимаешь условия (/terms в боте). Вопрос по оплате — /paysupport
+        </p>
+      </div>
+    </div>
+
+    <div class="vip-free-card">
+      <div class="card-head">
+        <div class="card-title">⭐ Бесплатный VIP</div>
+        <div class="free-tag">за друзей</div>
+      </div>
+      <p class="card-desc">
+        Пригласи <span id="target-desc">7</span> друзей по своей ссылке — и алерты будут приходить тебе быстрее, чем обычным людям. Но позже, чем платным VIP.
+      </p>
+
+      <div class="progress-head">
+        <span>Приглашено друзей</span>
+        <span class="progress-count" id="ref-counter">0 из 7</span>
+      </div>
+      <div class="segments" id="segments"></div>
+
+      <div class="ref-box">
+        <div class="ref-url" id="ref-link">https://t.me/wartrezlox_agent</div>
+        <button class="btn-copy" id="btn-copy">Копировать</button>
+      </div>
+
+      <button class="btn-share" id="btn-share">📨 Отправить ссылку другу</button>
+
+      <p class="fine-print">
+        Друг засчитается, когда запустит бота по твоей ссылке и подпишется на <span id="req-ch">@wartrezlox</span>.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      try {
+        tg.setHeaderColor("#0b0a14");
+        tg.setBackgroundColor("#0b0a14");
+      } catch (e) {}
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const vip = parseInt(params.get("vip") || "0", 10);
+    const refs = parseInt(params.get("refs") || "0", 10);
+    const target = Math.max(1, parseInt(params.get("target") || "7", 10));
+    const price = params.get("price") || "50";
+    const botUsername = params.get("bot") || "wartrezlox_agent";
+    const uid = params.get("uid") || (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : "");
+    const invoiceUrl = params.get("inv") || "";
+    const reqChannel = params.get("ch") || "@wartrezlox";
+
+    // Подсветка текущего статуса в очереди
+    const activeId = vip >= 2 ? "row-vip2" : vip === 1 ? "row-vip1" : "row-vip0";
+    const activeRow = document.getElementById(activeId);
+    if (activeRow) activeRow.classList.add("active");
+
+    // Цены и параметры
+    document.getElementById("price-top").textContent = price;
+    document.getElementById("price-btn").textContent = price;
+    document.getElementById("target-desc").textContent = target;
+    document.getElementById("req-ch").textContent = reqChannel;
+    document.getElementById("ref-counter").textContent = `${Math.min(refs, target)} из ${target}`;
+
+    // Сегменты прогресса
+    const segWrap = document.getElementById("segments");
+    segWrap.style.gridTemplateColumns = `repeat(${target}, 1fr)`; for (let i = 0; i < target; i++) { const div = document.createElement("div"); div.className = "seg" + (i < refs ? " filled" : ""); segWrap.appendChild(div); }  // Реферальная ссылка const refLink = uid ? `https://t.me/${botUsername}?start=r${uid}` : `https://t.me/${botUsername}`;
+    document.getElementById("ref-link").textContent = refLink;
+
+    // Кнопка покупки
+    const buyBtn = document.getElementById("btn-buy");
+    if (vip >= 2) {
+      buyBtn.textContent = "👑 Платный VIP уже активен";
+      buyBtn.classList.add("owned");
+    } else {
+      buyBtn.addEventListener("click", () => {
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+        if (invoiceUrl && tg && tg.openInvoice) {
+          tg.openInvoice(invoiceUrl, (status) => {
+            if (status === "paid") {
+              if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+              tg.close();
+            }
+          });
+        } else if (tg && tg.sendData) {
+          tg.sendData("buy_vip");
+        } else {
+          alert("Открой окно внутри Telegram, чтобы оплатить Stars.");
+        }
+      });
+    }
+
+    // Копирование ссылки (с запасным способом для iPhone)
+    const copyBtn = document.getElementById("btn-copy");
+    copyBtn.addEventListener("click", async () => {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(refLink);
+        } else {
+          throw new Error("fallback");
+        }
+      } catch (e) {
+        const ta = document.createElement("textarea");
+        ta.value = refLink;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      copyBtn.textContent = "Скопировано ✓";
+      setTimeout(() => { copyBtn.textContent = "Копировать"; }, 1800);
+    });
+
+    // Поделиться ссылкой
+    document.getElementById("btn-share").addEventListener("click", () => {
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+      const shareText = encodeURIComponent("Лови редкие Divine и Eternal яйца в Steal An Egg первым!");
+      const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${shareText}`;
+      if (tg && tg.openTelegramLink) {
+        tg.openTelegramLink(shareUrl);
+      } else {
+        window.open(shareUrl, "_blank");
+      }
+    });
+  </script>
+</body>
+</html>
