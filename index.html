@@ -7,17 +7,14 @@
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {
-      --bg: #0b0a14;
-      --card: #131322;
-      --card-inner: #1b1b2e;
-      --text: #ffffff;
-      --muted: #9898b0;
-      --gold: #ffb830;
-      --gold-2: #ff9524;
-      --pink: #e84393;
-      --cyan: #19d4ff;
-      --cyan-bg: #102a36;
-      --green: #4ade80;
+      --bg: #040811;
+      --card: #0a1222;
+      --text: #f0f9ff;
+      --muted: #8aa0bd;
+      --cyan: #00e5ff;
+      --blue: #2563eb;
+      --ice: #7dd3fc;
+      --border: rgba(56, 189, 248, 0.14);
     }
 
     * {
@@ -30,9 +27,9 @@
       padding: 18px 14px calc(28px + env(safe-area-inset-bottom));
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
       background:
-        radial-gradient(circle at 50% 4%, rgba(255, 168, 45, 0.2), transparent 34%),
-        radial-gradient(circle at 85% 38%, rgba(168, 85, 247, 0.14), transparent 38%),
-        radial-gradient(circle at 15% 85%, rgba(25, 212, 255, 0.1), transparent 40%),
+        radial-gradient(circle at 50% 4%, rgba(0, 229, 255, 0.22), transparent 36%),
+        radial-gradient(circle at 85% 40%, rgba(37, 99, 235, 0.18), transparent 40%),
+        radial-gradient(circle at 12% 85%, rgba(0, 180, 255, 0.12), transparent 42%),
         var(--bg);
       color: var(--text);
       min-height: 100vh;
@@ -63,10 +60,10 @@
 
     .egg-glow {
       position: absolute;
-      inset: 4px;
+      inset: 2px;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(255, 184, 48, 0.55) 0%, rgba(255, 100, 150, 0.18) 52%, transparent 72%);
-      filter: blur(12px);
+      background: radial-gradient(circle, rgba(0, 229, 255, 0.55) 0%, rgba(37, 99, 235, 0.22) 52%, transparent 72%);
+      filter: blur(13px);
       animation: pulse 3s ease-in-out infinite;
     }
 
@@ -75,11 +72,11 @@
       width: 78px;
       height: 98px;
       border-radius: 50% 50% 48% 48% / 60% 60% 40% 40%;
-      background: radial-gradient(circle at 34% 28%, #fffbe0 0%, #ffd54f 24%, #ff9f1c 62%, #d9468f 100%);
+      background: radial-gradient(circle at 34% 26%, #ffffff 0%, #a5f3fc 22%, #00c8ff 58%, #1d4ed8 100%);
       box-shadow:
-        inset -10px -14px 24px rgba(155, 28, 102, 0.45),
-        inset 6px 8px 16px rgba(255, 255, 255, 0.55),
-        0 10px 30px rgba(255, 165, 38, 0.35);
+        inset -10px -14px 24px rgba(10, 25, 80, 0.58),
+        inset 6px 8px 16px rgba(255, 255, 255, 0.65),
+        0 10px 32px rgba(0, 212, 255, 0.42);
       animation: float 3.2s ease-in-out infinite;
     }
 
@@ -102,7 +99,7 @@
     }
 
     .grad-word {
-      background: linear-gradient(90deg, #ffbd3b 0%, #ff5c8a 60%, #c850ff 100%);
+      background: linear-gradient(90deg, #e0f7ff 0%, #00e5ff 48%, #3b82f6 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       display: inline-block;
@@ -121,36 +118,37 @@
       font-size: 11.5px;
       font-weight: 700;
       letter-spacing: 1.4px;
-      color: #7c7c99;
+      color: #6b85a8;
       text-transform: uppercase;
       margin: 18px 4px 10px;
     }
 
     /* Queue card */
     .queue-card {
-      background: rgba(20, 20, 36, 0.92);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(10, 18, 34, 0.92);
+      border: 1px solid var(--border);
       border-radius: 20px;
       padding: 8px;
       margin-bottom: 22px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
     }
 
     .q-row {
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 12px 12px;
+      padding: 12px;
       border-radius: 14px;
       transition: background 0.2s;
     }
 
     .q-row + .q-row {
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      border-top: 1px solid rgba(148, 163, 184, 0.08);
     }
 
     .q-row.active {
-      background: rgba(124, 92, 255, 0.14);
-      border-top-color: transparent;
+      background: rgba(0, 229, 255, 0.11);
+      border: 1px solid rgba(0, 229, 255, 0.22);
     }
 
     .q-row.active + .q-row {
@@ -183,8 +181,8 @@
       font-weight: 800;
       padding: 2px 7px;
       border-radius: 7px;
-      background: linear-gradient(90deg, #6d5dfc, #9d50ff);
-      color: #fff;
+      background: linear-gradient(90deg, #00d4ff, #2563eb);
+      color: #ffffff;
       letter-spacing: 0.4px;
     }
 
@@ -202,7 +200,7 @@
       width: 78px;
       height: 7px;
       border-radius: 99px;
-      background: rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.07);
       overflow: hidden;
       flex-shrink: 0;
     }
@@ -214,17 +212,18 @@
 
     .fill-paid {
       width: 24%;
-      background: linear-gradient(90deg, #ffbe3b, #ff4d8d);
+      background: linear-gradient(90deg, #a5f3fc, #00e5ff);
+      box-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
     }
 
     .fill-ref {
       width: 100%;
-      background: linear-gradient(90deg, #19d4ff, #38ef7d);
+      background: linear-gradient(90deg, #0ea5e9, #3b82f6);
     }
 
     .fill-free {
       width: 100%;
-      background: rgba(152, 152, 176, 0.4);
+      background: rgba(138, 160, 189, 0.35);
     }
 
     /* Paid VIP Card */
@@ -232,8 +231,8 @@
       position: relative;
       padding: 1.5px;
       border-radius: 22px;
-      background: linear-gradient(155deg, #ffb830 0%, #c850ff 55%, #5b21b6 100%);
-      box-shadow: 0 10px 35px rgba(255, 168, 45, 0.14);
+      background: linear-gradient(155deg, #00f0ff 0%, #0284c7 50%, #1e3a8a 100%);
+      box-shadow: 0 10px 36px rgba(0, 212, 255, 0.16);
       margin-bottom: 16px;
     }
 
@@ -241,19 +240,19 @@
       position: absolute;
       top: -12px;
       right: 16px;
-      background: linear-gradient(90deg, #ffd15c, #ff962e);
-      color: #1c1204;
+      background: linear-gradient(90deg, #a5f3fc, #00d4ff);
+      color: #031526;
       font-size: 11px;
       font-weight: 800;
       letter-spacing: 0.5px;
       padding: 5px 12px;
       border-radius: 99px;
-      box-shadow: 0 4px 14px rgba(255, 168, 45, 0.4);
+      box-shadow: 0 4px 16px rgba(0, 229, 255, 0.45);
       z-index: 2;
     }
 
     .vip-card {
-      background: linear-gradient(180deg, #171427 0%, #11101d 100%);
+      background: linear-gradient(180deg, #0b1629 0%, #070e1b 100%);
       border-radius: 20.5px;
       padding: 22px 18px 18px;
     }
@@ -277,7 +276,8 @@
     .price-tag {
       font-size: 18px;
       font-weight: 800;
-      color: var(--gold);
+      color: var(--cyan);
+      text-shadow: 0 0 12px rgba(0, 229, 255, 0.4);
       white-space: nowrap;
     }
 
@@ -302,11 +302,11 @@
       display: flex;
       align-items: center;
       gap: 9px;
-      color: #ececf5;
+      color: #e2f1ff;
     }
 
     .chk {
-      color: var(--green);
+      color: var(--cyan);
       font-weight: 900;
       font-size: 15px;
     }
@@ -318,9 +318,9 @@
       padding: 15px 16px;
       font-size: 16px;
       font-weight: 800;
-      color: #1b1102;
-      background: linear-gradient(90deg, #ffd154 0%, #ff9c2a 100%);
-      box-shadow: 0 6px 20px rgba(255, 165, 38, 0.32);
+      color: #031526;
+      background: linear-gradient(90deg, #67e8f9 0%, #00d4ff 55%, #0ea5e9 100%);
+      box-shadow: 0 6px 24px rgba(0, 212, 255, 0.38);
       cursor: pointer;
       transition: transform 0.12s ease, opacity 0.15s ease;
     }
@@ -330,9 +330,9 @@
     }
 
     .btn-buy.owned {
-      background: rgba(74, 222, 128, 0.16);
-      color: #4ade80;
-      border: 1px solid rgba(74, 222, 128, 0.35);
+      background: rgba(0, 229, 255, 0.12);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.35);
       box-shadow: none;
       cursor: default;
     }
@@ -341,14 +341,14 @@
       margin: 12px 2px 0;
       font-size: 12px;
       line-height: 1.4;
-      color: #787894;
+      color: #637a99;
       text-align: center;
     }
 
     /* Free VIP Card */
     .vip-free-card {
-      background: linear-gradient(180deg, #131626 0%, #10121e 100%);
-      border: 1px solid rgba(255, 255, 255, 0.09);
+      background: linear-gradient(180deg, #0a1324 0%, #070d19 100%);
+      border: 1px solid var(--border);
       border-radius: 22px;
       padding: 20px 18px 18px;
     }
@@ -356,7 +356,7 @@
     .free-tag {
       font-size: 16px;
       font-weight: 800;
-      color: var(--cyan);
+      color: var(--ice);
       white-space: nowrap;
     }
 
@@ -369,7 +369,7 @@
     }
 
     .progress-head span:first-child {
-      color: #d6d6e8;
+      color: #cbdcf0;
       font-weight: 600;
     }
 
@@ -391,16 +391,16 @@
     }
 
     .seg.filled {
-      background: linear-gradient(90deg, #19d4ff, #42e8e0);
-      box-shadow: 0 0 10px rgba(25, 212, 255, 0.45);
+      background: linear-gradient(90deg, #00e5ff, #38bdf8);
+      box-shadow: 0 0 10px rgba(0, 229, 255, 0.55);
     }
 
     .ref-box {
       display: flex;
       align-items: center;
       gap: 8px;
-      background: #0b0c16;
-      border: 1px solid rgba(255, 255, 255, 0.09);
+      background: #040811;
+      border: 1px solid rgba(56, 189, 248, 0.16);
       border-radius: 14px;
       padding: 6px 6px 6px 12px;
       margin-bottom: 10px;
@@ -409,7 +409,7 @@
     .ref-url {
       flex: 1;
       font-size: 13px;
-      color: #b7b7cf;
+      color: #9fb7d4;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -422,7 +422,7 @@
       padding: 9px 13px;
       font-size: 13px;
       font-weight: 700;
-      background: rgba(25, 212, 255, 0.14);
+      background: rgba(0, 229, 255, 0.14);
       color: var(--cyan);
       cursor: pointer;
       flex-shrink: 0;
@@ -434,13 +434,13 @@
 
     .btn-share {
       width: 100%;
-      border: 1px solid rgba(25, 212, 255, 0.32);
+      border: 1px solid rgba(0, 229, 255, 0.32);
       border-radius: 14px;
       padding: 13px 16px;
       font-size: 15px;
       font-weight: 700;
       color: var(--cyan);
-      background: rgba(25, 212, 255, 0.1);
+      background: rgba(0, 229, 255, 0.09);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -554,8 +554,8 @@
       tg.ready();
       tg.expand();
       try {
-        tg.setHeaderColor("#0b0a14");
-        tg.setBackgroundColor("#0b0a14");
+        tg.setHeaderColor("#040811");
+        tg.setBackgroundColor("#040811");
       } catch (e) {}
     }
 
@@ -569,24 +569,20 @@
     const invoiceUrl = params.get("inv") || "";
     const reqChannel = params.get("ch") || "@wartrezlox";
 
-    // Подсветка текущего статуса в очереди
     const activeId = vip >= 2 ? "row-vip2" : vip === 1 ? "row-vip1" : "row-vip0";
     const activeRow = document.getElementById(activeId);
     if (activeRow) activeRow.classList.add("active");
 
-    // Цены и параметры
     document.getElementById("price-top").textContent = price;
     document.getElementById("price-btn").textContent = price;
     document.getElementById("target-desc").textContent = target;
     document.getElementById("req-ch").textContent = reqChannel;
     document.getElementById("ref-counter").textContent = `${Math.min(refs, target)} из ${target}`;
 
-    // Сегменты прогресса
     const segWrap = document.getElementById("segments");
-    segWrap.style.gridTemplateColumns = `repeat(${target}, 1fr)`; for (let i = 0; i < target; i++) { const div = document.createElement("div"); div.className = "seg" + (i < refs ? " filled" : ""); segWrap.appendChild(div); }  // Реферальная ссылка const refLink = uid ? `https://t.me/${botUsername}?start=r${uid}` : `https://t.me/${botUsername}`;
+    segWrap.style.gridTemplateColumns = `repeat(${target}, 1fr)`; for (let i = 0; i < target; i++) { const div = document.createElement("div"); div.className = "seg" + (i < refs ? " filled" : ""); segWrap.appendChild(div); }  const refLink = uid ? `https://t.me/${botUsername}?start=r${uid}` : `https://t.me/${botUsername}`;
     document.getElementById("ref-link").textContent = refLink;
 
-    // Кнопка покупки
     const buyBtn = document.getElementById("btn-buy");
     if (vip >= 2) {
       buyBtn.textContent = "👑 Платный VIP уже активен";
@@ -609,7 +605,6 @@
       });
     }
 
-    // Копирование ссылки (с запасным способом для iPhone)
     const copyBtn = document.getElementById("btn-copy");
     copyBtn.addEventListener("click", async () => {
       try {
@@ -633,7 +628,6 @@
       setTimeout(() => { copyBtn.textContent = "Копировать"; }, 1800);
     });
 
-    // Поделиться ссылкой
     document.getElementById("btn-share").addEventListener("click", () => {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
       const shareText = encodeURIComponent("Лови редкие Divine и Eternal яйца в Steal An Egg первым!");
