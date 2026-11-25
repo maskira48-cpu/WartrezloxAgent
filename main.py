@@ -49,9 +49,6 @@ WELCOME_PHOTO = ""
 REQUIRED_CHANNEL = "@wartrezlox"
 REQUIRED_CHANNEL_URL = "https://t.me/wartrezlox"
 
-# Каналы для автопостинга (бот должен быть там админом с правами публикации и удаления)
-TG_CHANNELS = ["@wartrezlox", "@loqlux"]
-
 # Экономика VIP и рефералки
 VIP_PRICE_STARS = 50
 REF_TARGET = 7
@@ -59,8 +56,8 @@ REF_VIP_DELAY = 5          # задержка для бесплатного (р�
 FREE_USER_DELAY = 30       # реальная задержка в секундах для обычных пользователей
 VIP_EARLY_TEXT_SEC = 160   # сколько секунд отображается в тексте уведомления
 
-# Пауза между циклами проверки Discord (сек)
-DISCORD_POLL_DELAY = 6
+# Каналы для автопостинга (бот должен быть там админом с правами на посты и удаление)
+TG_CHANNELS = ["@wartrezlox", "@loqlux"]
 
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 try:
@@ -74,7 +71,7 @@ VIP_INVOICE_URL = ""
 MSK_TZ = timezone(timedelta(hours=3))
 PENDING_BROADCAST: dict[int, str] = {}
 
-# Новый токен Discord (с автоподбором I/l)
+# Новый токен Discord (с автоподбором I/l со скриншота)
 TOKEN_VARIANTS = [
     f"NzA3MjI4NDU5NjU0NDQ3MTM0.Gsyur-.{c1}UxQ{c2}qS34ea7xcv96H0sAdfnESa36JY5O_-u{c3}8"
     for c1, c2, c3 in itertools.product(["I", "l"], ["I", "l"], ["l", "I"])
@@ -1304,4 +1301,557 @@ async def on_successful_payment(message: Message, bot: Bot):
         user = await get_or_create_user(uid)
         await message.answer(
             "👑 <b>Оплата прошла успешно! Платный VIP активирован навсегда.</b>\n\n"
-            "Теперь все уведомления приходят тебе в самом начале очереди, без
+            "Теперь все уведомления приходят тебе в самом начале очереди, без задержки.",
+            reply_markup=bottom_kb(user),
+            disable_web_page_preview=True,
+        )
+
+        uname = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
+        admin_text = (
+            "⭐ <b>Новая покупка VIP!</b>\n\n"
+            f"👤 Пользователь: {html.escape(message.from_user.full_name)} ({uname})\n"
+            f"🆔 ID: <code>{uid}</code>\n"
+            f"💰 Сумма: <b>{payment.total_amount} {payment.currency}</b>"
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, admin_text, disable_web_page_preview=True)
+            except Exception as e:
+                print(f"⚠️ Не удалось уведомить админа {admin_id}: {e}", flush=True)
+
+
+@router.callback_query(F.data == "toggle:alerts")
+async def cb_toggle_alerts(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    new_val = 0 if user["alerts_on"] else 1
+    await update_user(cb.from_user.id, alerts_on=new_val)
+    user["alerts_on"] = new_val
+    await safe_edit(cb, main_menu_text(user), main_menu_kb(user))
+    await cb.answer("Уведомления включены" if new_val else "Уведомления выключены")
+
+
+@router.callback_query(F.data == "toggle:events")
+async def cb_toggle_events(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    new_val = 0 if user["events_on"] else 1
+    await update_user(cb.from_user.id, events_on=new_val)
+    user["events_on"] = new_val
+    await safe_edit(cb, main_menu_text(user), main_menu_kb(user))
+    await cb.answer("События включены" if new_val else "События выключены")
+
+
+@router.callback_query(F.data == "menu:rarities")
+async def cb_menu_rarities(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    await safe_edit(
+        cb,
+        "💎 <b>Выбери редкости яиц</b>\n\nНажимай на кнопки, чтобы включить или выключить уведомления:",
+        rarities_kb(user),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("rar:"))
+async def cb_toggle_rarity(cb: CallbackQuery):
+    rar = cb.data.split(":", 1)[1]
+    user = await get_or_create_user(cb.from_user.id)
+    chosen = parse_csv_set(user["rarities"])
+    if rar in chosen:
+        chosen.remove(rar)
+    else:
+        chosen.add(rar)
+    ordered = [r for r in ALL_RARITIES if r in chosen]
+    new_str = ",".join(ordered)
+    await update_user(cb.from_user.id, rarities=new_str)
+    user["rarities"] = new_str
+    await safe_edit(
+        cb,
+        "💎 <b>Выбери редкости яиц</b>\n\nНажимай на кнопки, чтобы включить или выключить уведомления:",
+        rarities_kb(user),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "menu:locations")
+async def cb_menu_locations(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    await safe_edit(
+        cb,
+        "🏛 <b>Выбери локации</b>\n\nМожешь оставить «Все локации» или выбрать только нужные:",
+        locations_kb(user),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("loc:"))
+async def cb_toggle_location(cb: CallbackQuery):
+    loc = cb.data.split(":", 1)[1]
+    user = await get_or_create_user(cb.from_user.id)
+    if loc == "ALL":
+        new_str = "ALL"
+    else:
+        if user["locations"] == "ALL":
+            chosen = {loc}
+        else:
+            chosen = parse_csv_set(user["locations"])
+            if loc in chosen:
+                chosen.remove(loc)
+            else:
+                chosen.add(loc)
+        new_str = "ALL" if not chosen else ",".join(l for l in ALL_LOCATIONS if l in chosen)
+    await update_user(cb.from_user.id, locations=new_str)
+    user["locations"] = new_str
+    await safe_edit(
+        cb,
+        "🏛 <b>Выбери локации</b>\n\nМожешь оставить «Все локации» или выбрать только нужные:",
+        locations_kb(user),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("stock:"))
+async def cb_stock(cb: CallbackQuery):
+    loc_filter = cb.data.split(":", 1)[1]
+    text, kb = await render_stock_screen(loc_filter)
+    await safe_edit(cb, text, kb)
+    await cb.answer()
+
+
+# === ПАРСИНГ DISCORD ===
+def is_spam(m: dict) -> bool:
+    author = m.get("author", {}).get("username", "").lower()
+    content = m.get("content", "").lower()
+    if "add me to your server" in content or "customize" in content:
+        return True
+    if "sapphire" in author and "egg:" not in str(m).lower():
+        return True
+    return False
+
+
+def detect_rarity(title_text: str, raw: str, clean_raw: str) -> str:
+    r_match = re.search(r"(?:Rarity|Tier):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
+    if r_match:
+        val = clean_field(r_match.group(1)).lower()
+        for key, label in RARITIES_MAP:
+            if key in val:
+                return label
+        return clean_field(r_match.group(1)).capitalize()
+
+    searchable = re.sub(
+        r"(?:Location|Where):\*?\*?\s*[^\n]+",
+        "",
+        f"{title_text}\n{raw}",
+        flags=re.IGNORECASE,
+    ).lower()
+    for key, label in RARITIES_MAP:
+        if re.search(rf"(?<![a-z]){key}(?![a-z])", searchable):
+            return label
+    return ""
+
+
+def parse_discord_message(m: dict, ctype: str) -> dict | None:
+    if is_spam(m):
+        return None
+
+    raw_parts = [m.get("content", "")]
+    title_parts = []
+    for e in m.get("embeds", []):
+        if e.get("author", {}).get("name"):
+            title_parts.append(e["author"]["name"])
+        if e.get("title"):
+            title_parts.append(e["title"])
+            raw_parts.append(e["title"])
+        raw_parts.append(e.get("description", ""))
+        for f in e.get("fields", []):
+            raw_parts.append(f"{f.get('name', '')}: {f.get('value', '')}")
+        if e.get("footer", {}).get("text"):
+            raw_parts.append(e["footer"]["text"])
+
+    raw = "\n".join(raw_parts)
+    if not raw.strip():
+        return None
+
+    clean_raw = re.sub(r"<a?:\w+:\d+>", "", raw)
+    raw_lower = clean_raw.lower()
+    title_text = " ".join(title_parts)
+
+    ts_match = re.search(r"<t:(\d+)", raw)
+    spawn_ts = int(ts_match.group(1)) if ts_match else int(time.time())
+
+    link_match = re.search(r"\((https?://[^\)]+)\)", raw)
+    link_url = link_match.group(1) if link_match else ""
+
+    # Tidal Surge
+    if ctype == "egg" and any(
+        k in raw_lower
+        for k in ("tidal surge", "flooded", "not a spawn alert", "possible eggs", "event alert")
+    ):
+        where_match = re.search(r"(?:Where|Location):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
+        loc = clean_field(where_match.group(1)) if where_match else "Alien Planet"
+        return {
+            "discord_msg_id": m["id"],
+            "ctype": "tidal",
+            "name": "Tidal Surge",
+            "rarity": "",
+            "location": loc,
+            "money": "—",
+            "speed": "—",
+            "link_url": link_url,
+            "spawn_ts": spawn_ts,
+        }
+
+    # Яйца
+    if ctype == "egg":
+        egg_match = re.search(r"(?:Egg|Name):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
+        if not egg_match:
+            return None
+        egg_name = clean_field(egg_match.group(1))
+        loc_match = re.search(r"(?:Location|Where):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
+        loc = clean_field(loc_match.group(1)) if loc_match else "Unknown"
+        money_match = re.search(r"(?:Money|Value|Income):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
+        if money_match:
+            money = clean_field(money_match.group(1))
+        else:
+            m_alt = re.search(r"\$\d+[a-zA-Z]*(?:/s|/sec)?", clean_raw, re.IGNORECASE)
+            money = m_alt.group(0) if m_alt else "—"
+        speed_match = re.search(r"(?:Recommended Speed|Speed):\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
+        speed = clean_field(speed_match.group(1)) if speed_match else "—"
+        rarity = detect_rarity(title_text, raw, clean_raw)
+        return {
+            "discord_msg_id": m["id"],
+            "ctype": "egg",
+            "name": egg_name,
+            "rarity": rarity,
+            "location": loc,
+            "money": money,
+            "speed": speed,
+            "link_url": link_url,
+            "spawn_ts": spawn_ts,
+        }
+
+    # Бабочки
+    if ctype == "butterfly":
+        where_match = re.search(r"Where:\*?\*?\s*([^\n]+)", clean_raw, re.IGNORECASE)
+        loc = clean_field(where_match.group(1)) if where_match else "Enchanted Forest"
+        return {
+            "discord_msg_id": m["id"],
+            "ctype": "butterfly",
+            "name": "Butterfly Event",
+            "rarity": "",
+            "location": loc,
+            "money": "—",
+            "speed": "—",
+            "link_url": link_url,
+            "spawn_ts": spawn_ts,
+        }
+
+    # Чёрный рынок
+    if ctype == "market":
+        speed_match = re.search(r"(\d+[A-Za-z]*)\s*Speed", clean_raw, re.IGNORECASE)
+        speed = speed_match.group(1) if speed_match else "250B"
+        loc = "Alien Planet" if "Alien Planet" in clean_raw else "Unknown"
+        return {
+            "discord_msg_id": m["id"],
+            "ctype": "market",
+            "name": "Slick Rick",
+            "rarity": "",
+            "location": loc,
+            "money": "—",
+            "speed": speed,
+            "link_url": link_url,
+            "spawn_ts": spawn_ts,
+        }
+
+    return None
+
+
+# === ФОРМАТИРОВАНИЕ УВЕДОМЛЕНИЙ ===
+def format_post(item: dict, delay_sec: int | None = None) -> str:
+    msk_time = fmt_msk(item["spawn_ts"])
+    name = html.escape(item["name"])
+    loc = html.escape(item["location"])
+    money = html.escape(item["money"])
+    speed = html.escape(item["speed"])
+    rarity = item["rarity"]
+
+    vip_note = ""
+    if delay_sec is not None:
+        if item["ctype"] == "egg":
+            vip_note = f"\n\n⭐ <i>VIP узнали об этом яйце на {delay_sec} сек раньше</i>"
+        else:
+            vip_note = f"\n\n⭐ <i>VIP узнали об этом событии на {delay_sec} сек раньше</i>"
+
+    if item["ctype"] == "egg":
+        sq = RARITY_SQUARES.get(rarity, "⬜")
+        rar_label = html.escape(rarity.upper()) if rarity else "NEW EGG"
+        return (
+            "🔔 <b>Новое яйцо!</b>\n\n"
+            f"{sq} <b>{rar_label}</b>\n"
+            f"🥚 <b>{name}</b>\n\n"
+            "<blockquote>"
+            f"📍 Локация: 🏛 {loc}\n"
+            f"💰 Доход: {money}\n"
+            f"⚡ Скорость: {speed}"
+            "</blockquote>"
+            f"{vip_note}"
+        )
+
+    if item["ctype"] == "tidal":
+        return (
+            "🔔 <b>Новое событие!</b>\n\n"
+            "🟦 <b>TIDAL SURGE</b>\n"
+            "🌊 <b>Затопление началось</b>\n\n"
+            "<blockquote>"
+            f"📍 Локация: 🏛 {loc}\n"
+            "💧 Инфо: Доступны редкие водные яйца\n"
+            f"⏰ Время: {msk_time}"
+            "</blockquote>"
+            f"{vip_note}"
+        )
+
+    if item["ctype"] == "butterfly":
+        return (
+            "🔔 <b>Новое событие!</b>\n\n"
+            "🟪 <b>BUTTERFLY EVENT</b>\n"
+            "🦋 <b>Ивент бабочек начался</b>\n\n"
+            "<blockquote>"
+            f"📍 Локация: 🏛 {loc}\n"
+            "🎯 Инфо: Ловите бабочек сачком\n"
+            f"⏰ Время: {msk_time}"
+            "</blockquote>"
+            f"{vip_note}"
+        )
+
+    return (
+        "🔔 <b>Новое событие!</b>\n\n"
+        "🟧 <b>BLACK MARKET</b>\n"
+        "🛒 <b>Торговец Slick Rick прибыл</b>\n\n"
+        "<blockquote>"
+        f"📍 Локация: 🏛 {loc}\n"
+        "📦 Товары: Контрабанда и мутации\n"
+        f"⚡ Скорость: {speed}\n"
+        f"⏰ Время: {msk_time}"
+        "</blockquote>"
+        f"{vip_note}"
+    )
+
+
+def alert_kb(item: dict, is_vip: bool) -> InlineKeyboardMarkup | None:
+    rows = []
+    if item.get("link_url"):
+        rows.append([make_btn("🎮 Зайти в игру", url=item["link_url"], style="success")])
+    if not is_vip:
+        rows.append([make_btn("⭐ Хочу VIP", callback_data="open:vip")])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+async def delete_later(bot: Bot, chat_id: str, msg_id: int):
+    await asyncio.sleep(900)
+    try:
+        await bot.delete_message(chat_id, msg_id)
+    except Exception:
+        pass
+
+
+def user_matches_item(u: dict, item: dict) -> bool:
+    if item["ctype"] == "egg":
+        user_rars = parse_csv_set(u["rarities"])
+        if item["rarity"] not in user_rars:
+            return False
+        if u["locations"] != "ALL":
+            user_locs = parse_csv_set(u["locations"])
+            if not any(loc.lower() in item["location"].lower() for loc in user_locs):
+                return False
+        return True
+    return bool(u["events_on"])
+
+
+async def send_batch(bot: Bot, users: list[dict], text: str, markup: InlineKeyboardMarkup | None):
+    for u in users:
+        try:
+            await bot.send_message(
+                u["user_id"],
+                text,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+        except TelegramForbiddenError:
+            await update_user(u["user_id"], alerts_on=0)
+        except Exception as e:
+            print(f"⚠️ Ошибка отправки {u['user_id']}: {e}", flush=True)
+        await asyncio.sleep(0.05)
+
+
+async def broadcast_item(bot: Bot, item: dict):
+    vip_text = format_post(item, delay_sec=None)
+    vip_markup = alert_kb(item, is_vip=True)
+
+    # 1. Каналы (только Eternal/Divine яйца + все события, с удалением через 15 мин)
+    if TG_CHANNELS and (item["ctype"] != "egg" or item["rarity"] in {"Divine", "Eternal"}):
+        for ch in TG_CHANNELS:
+            try:
+                msg = await bot.send_message(
+                    ch,
+                    vip_text,
+                    reply_markup=vip_markup,
+                    disable_web_page_preview=True,
+                )
+                asyncio.create_task(delete_later(bot, ch, msg.message_id))
+            except Exception as e:
+                print(f"❌ Ошибка канала {ch}: {e}", flush=True)
+
+    # 2. Персональная рассылка по очереди: Платный VIP -> Бесплатный VIP -> Обычные
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM users WHERE alerts_on = 1") as cur:
+            all_users = [dict(r) for r in await cur.fetchall()]
+
+    vip_paid, vip_ref, free_users = [], [], []
+    for u in all_users:
+        if not user_matches_item(u, item):
+            continue
+        lvl = u.get("vip_level") or 0
+        if lvl == 2:
+            vip_paid.append(u)
+        elif lvl == 1:
+            vip_ref.append(u)
+        else:
+            free_users.append(u)
+
+    if vip_paid:
+        await send_batch(bot, vip_paid, vip_text, vip_markup)
+    if vip_ref:
+        await asyncio.sleep(REF_VIP_DELAY)
+        await send_batch(bot, vip_ref, vip_text, vip_markup)
+    if free_users:
+        remain = max(0, FREE_USER_DELAY - (REF_VIP_DELAY if vip_ref else 0))
+        if remain:
+            await asyncio.sleep(remain)
+        free_text = format_post(item, delay_sec=VIP_EARLY_TEXT_SEC)
+        free_markup = alert_kb(item, is_vip=False)
+        await send_batch(bot, free_users, free_text, free_markup)
+
+
+async def discord_watcher(bot: Bot):
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        token = None
+        for tk in TOKEN_VARIANTS:
+            try:
+                async with session.get(
+                    "https://discord.com/api/v9/users/@me",
+                    headers={**BASE_HEADERS, "Authorization": tk},
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        token = tk
+                        print(f"✅ Авторизован в Discord как: {data.get('username')}", flush=True)
+                        break
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
+
+        if not token:
+            print("❌ Не подошёл ни один токен Discord!", flush=True)
+            return
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT discord_msg_id FROM spawns") as cur:
+                seen_ids = {row[0] for row in await cur.fetchall()}
+
+        first_fill = len(seen_ids) == 0
+        headers = {**BASE_HEADERS, "Authorization": token}
+
+        while True:
+            for cid, ctype in DISCORD_CHANNELS.items():
+                try:
+                    url = f"https://discord.com/api/v9/channels/{cid}/messages?limit=10"
+                    async with session.get(url, headers=headers) as r:
+                        if r.status != 200:
+                            continue
+                        msgs = await r.json()
+                        if not isinstance(msgs, list):
+                            continue
+
+                    for m in reversed(msgs):
+                        mid = m.get("id")
+                        if not mid or mid in seen_ids:
+                            continue
+                        seen_ids.add(mid)
+                        item = parse_discord_message(m, ctype)
+                        if not item:
+                            continue
+
+                        async with aiosqlite.connect(DB_PATH) as db:
+                            await db.execute(
+                                """
+                                INSERT OR IGNORE INTO spawns
+                                (discord_msg_id, ctype, name, rarity, location, money, speed, link_url, spawn_ts)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    item["discord_msg_id"],
+                                    item["ctype"],
+                                    item["name"],
+                                    item["rarity"],
+                                    item["location"],
+                                    item["money"],
+                                    item["speed"],
+                                    item["link_url"],
+                                    item["spawn_ts"],
+                                ),
+                            )
+                            await db.commit()
+
+                        if not first_fill:
+                            print(
+                                f"📢 Новый спавн: {item['name']} ({item['rarity'] or item['ctype']})",
+                                flush=True,
+                            )
+                            asyncio.create_task(broadcast_item(bot, item))
+
+                except Exception as e:
+                    print(f"⚠️ Ошибка канала {cid}: {e}", flush=True)
+                await asyncio.sleep(1.5)
+
+            first_fill = False
+            await asyncio.sleep(6)
+
+
+async def setup_bot_menu(bot: Bot):
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Главное меню"),
+            BotCommand(command="stock", description="Показать последний сток"),
+            BotCommand(command="vip", description="VIP: алерты первыми"),
+            BotCommand(command="terms", description="Условия покупки VIP"),
+            BotCommand(command="paysupport", description="Поддержка по оплате"),
+        ]
+    )
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+
+
+async def main():
+    global BOT_USERNAME
+    await init_db()
+    bot = Bot(token=TG_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    me = await bot.get_me()
+    BOT_USERNAME = me.username or ""
+
+    await setup_bot_menu(bot)
+    await ensure_vip_invoice_url(bot)
+
+    dp = Dispatcher()
+    dp.include_router(router)
+
+    watcher_task = asyncio.create_task(discord_watcher(bot))
+    print(f"🚀 Бот @{BOT_USERNAME} запущен!", flush=True)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        watcher_task.cancel()
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
