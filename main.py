@@ -6,14 +6,14 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import aiohttp
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     BotCommand,
@@ -21,10 +21,13 @@ from aiogram.types import (
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     LabeledPrice,
     MenuButtonCommands,
     Message,
     PreCheckoutQuery,
+    ReplyKeyboardMarkup,
+    WebAppInfo,
 )
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -33,7 +36,10 @@ if hasattr(sys.stdout, "reconfigure"):
 # === НАСТРОЙКИ ===
 TG_BOT_TOKEN = "9209605005:AAEy_QfMY6SCCwR_I7a7kFo-TdnW2yKdGKY"
 
-# Только эти Telegram ID имеют доступ к /stats, /setphoto, /givevip, /delvip, /reply и отчётам об оплатах
+# Ссылка на твоё мини-приложение на GitHub Pages
+MINI_APP_URL = "https://maskira48-cpu.github.io/VIP/"
+
+# Только эти Telegram ID имеют доступ к админ-командам и отчётам
 ADMIN_IDS = {1171395618}
 
 # Можно оставить пустым — просто отправь боту фото с подписью /setphoto
@@ -46,6 +52,7 @@ REQUIRED_CHANNEL_URL = "https://t.me/wartrezlox"
 # Экономика VIP и рефералки
 VIP_PRICE_STARS = 50
 REF_TARGET = 7
+REF_VIP_DELAY = 5          # задержка для бесплатного (реферального) VIP после платных VIP
 FREE_USER_DELAY = 30       # реальная задержка в секундах для обычных пользователей
 VIP_EARLY_TEXT_SEC = 160   # сколько секунд отображается в тексте уведомления
 
@@ -60,7 +67,9 @@ except OSError:
 DB_PATH = os.path.join(DATA_DIR, "bot.db")
 
 BOT_USERNAME = ""
+VIP_INVOICE_URL = ""
 MSK_TZ = timezone(timedelta(hours=3))
+PENDING_BROADCAST: dict[int, str] = {}
 
 NEW_TOKEN_VARIANTS = [
     f"NzA3MjI4NDU5NjU0NDQ3MTM0.G{c1}Htq2.7GbGfciwH9{c2}{c3}fyXFrfVQ{c4}HgB6C1Y4UMoREJf88"
@@ -134,20 +143,101 @@ def make_btn(
     *,
     callback_data: str | None = None,
     url: str | None = None,
+    web_app: WebAppInfo | None = None,
     style: str | None = None,
 ) -> InlineKeyboardButton:
-    """Создаёт кнопку с поддержкой цветного стиля (success/primary/danger), если версия aiogram это поддерживает."""
     kwargs = {"text": text}
     if callback_data is not None:
         kwargs["callback_data"] = callback_data
     if url is not None:
         kwargs["url"] = url
+    if web_app is not None:
+        kwargs["web_app"] = web_app
     if style is not None:
         try:
             return InlineKeyboardButton(**kwargs, style=style)
         except Exception:
             pass
     return InlineKeyboardButton(**kwargs)
+
+
+def make_kb_btn(
+    text: str,
+    *,
+    web_app: WebAppInfo | None = None,
+    style: str | None = None,
+) -> KeyboardButton:
+    kwargs = {"text": text}
+    if web_app is not None:
+        kwargs["web_app"] = web_app
+    if style is not None:
+        try:
+            return KeyboardButton(**kwargs, style=style)
+        except Exception:
+            pass
+    return KeyboardButton(**kwargs)
+
+
+# === MINI APP И ОПЛАТА STARS ===
+async def ensure_vip_invoice_url(bot: Bot) -> str:
+    global VIP_INVOICE_URL
+    if VIP_INVOICE_URL:
+        return VIP_INVOICE_URL
+    try:
+        VIP_INVOICE_URL = await bot.create_invoice_link(
+            title="👑 VIP-доступ навсегда",
+            description="Мгновенные уведомления Steal An Egg самым первым, без задержки.",
+            payload="vip_stars_50",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label="VIP-доступ навсегда", amount=VIP_PRICE_STARS)],
+        )
+    except Exception as e:
+        print(f"⚠️ Не удалось создать ссылку оплаты Stars: {e}", flush=True)
+    return VIP_INVOICE_URL
+
+
+def build_webapp_url(user: dict) -> str:
+    base = MINI_APP_URL.strip()
+    if not base.startswith("https://"):
+        return ""
+    sep = "&" if "?" in base else "?"
+    params = {
+        "vip": user.get("vip_level") or 0,
+        "refs": user.get("ref_count") or 0,
+        "target": REF_TARGET,
+        "price": VIP_PRICE_STARS,
+        "bot": BOT_USERNAME,
+        "uid": user["user_id"],
+        "ch": REQUIRED_CHANNEL,
+    }
+    if VIP_INVOICE_URL:
+        params["inv"] = VIP_INVOICE_URL
+    return f"{base}{sep}{urlencode(params)}"
+
+
+def bottom_kb(user: dict) -> ReplyKeyboardMarkup:
+    webapp_url = build_webapp_url(user)
+    if webapp_url:
+        vip_btn = make_kb_btn("💎 VIP", web_app=WebAppInfo(url=webapp_url), style="success")
+    else:
+        vip_btn = make_kb_btn("💎 VIP", style="success")
+
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                make_kb_btn("📦 Последний сток", style="primary"),
+                make_kb_btn("🔔 Уведомления"),
+            ],
+            [
+                make_kb_btn("💎 Редкости"),
+                make_kb_btn("🏛 Локации"),
+            ],
+            [vip_btn],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 # === БАЗА ДАННЫХ ===
@@ -257,6 +347,13 @@ async def get_or_create_user(user_id: int) -> dict:
             return dict(row)
 
 
+async def get_all_users() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM users") as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
 async def update_user(user_id: int, **fields):
     cols = ", ".join(f"{k} = ?" for k in fields)
     vals = list(fields.values()) + [user_id]
@@ -297,10 +394,7 @@ async def try_credit_referral(bot: Bot, user_id: int):
             "UPDATE users SET ref_count = COALESCE(ref_count, 0) + 1 WHERE user_id = ?",
             (ref_id,),
         )
-        async with db.execute(
-            "SELECT ref_count, vip_level FROM users WHERE user_id = ?",
-            (ref_id,),
-        ) as cur:
+        async with db.execute("SELECT * FROM users WHERE user_id = ?", (ref_id,)) as cur:
             ref_row = await cur.fetchone()
 
         upgraded = False
@@ -310,19 +404,22 @@ async def try_credit_referral(bot: Bot, user_id: int):
         await db.commit()
 
     if ref_row:
-        count = ref_row["ref_count"]
+        ref_user = await get_or_create_user(ref_id)
+        count = ref_user.get("ref_count") or 0
         try:
             if upgraded:
                 await bot.send_message(
                     ref_id,
                     f"🎉 <b>Поздравляем!</b> По твоей ссылке зашли {REF_TARGET} друзей — ты получил <b>бесплатный VIP</b>!\n\n"
-                    "Теперь все уведомления приходят тебе <b>мгновенно, без задержки</b>.",
+                    "Теперь алерты приходят тебе сразу после платных VIP.",
+                    reply_markup=bottom_kb(ref_user),
                 )
             elif count < REF_TARGET:
                 await bot.send_message(
                     ref_id,
                     f"👥 Друг запустил бота и подписался на канал!\n"
                     f"Твой прогресс до VIP: <b>{count} из {REF_TARGET}</b>.",
+                    reply_markup=bottom_kb(ref_user),
                 )
         except Exception:
             pass
@@ -354,10 +451,10 @@ def parse_csv_set(raw: str) -> set[str]:
 
 def vip_badge(vip_level: int) -> str:
     if vip_level == 2:
-        return "👑 VIP (Stars — максимальный приоритет)"
+        return "💎 Платный VIP (самое начало очереди)"
     if vip_level == 1:
-        return "⚡ VIP (Реферальный — без задержки)"
-    return "👤 Обычный (с задержкой)"
+        return "⭐ Бесплатный VIP (за друзей)"
+    return "👤 Без VIP (конец очереди)"
 
 
 def progress_bar(count: int, total: int) -> str:
@@ -377,7 +474,7 @@ async def get_welcome_photo():
     return None
 
 
-async def safe_edit(cb: CallbackQuery, text: str, markup: InlineKeyboardMarkup):
+async def safe_edit(cb: CallbackQuery, text: str, markup: InlineKeyboardMarkup | None):
     if cb.message.photo:
         try:
             await cb.message.edit_reply_markup(reply_markup=None)
@@ -388,6 +485,53 @@ async def safe_edit(cb: CallbackQuery, text: str, markup: InlineKeyboardMarkup):
     try:
         await cb.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
     except TelegramBadRequest:
+        pass
+
+
+# === АДМИН-РАССЫЛКА ===
+async def run_mass_broadcast(bot: Bot, admin_id: int, text: str, refresh_kb: bool = True):
+    users = await get_all_users()
+    sent, blocked, failed = 0, 0, 0
+
+    for u in users:
+        markup = bottom_kb(u) if refresh_kb else None
+        try:
+            await bot.send_message(
+                u["user_id"],
+                text,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+            sent += 1
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 0.5)
+            try:
+                await bot.send_message(
+                    u["user_id"],
+                    text,
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+        except TelegramForbiddenError:
+            await update_user(u["user_id"], alerts_on=0)
+            blocked += 1
+        except Exception as e:
+            print(f"⚠️ Ошибка рассылки {u['user_id']}: {e}", flush=True)
+            failed += 1
+        await asyncio.sleep(0.05)
+
+    try:
+        await bot.send_message(
+            admin_id,
+            "✅ <b>Рассылка завершена!</b>\n\n"
+            f"📨 Доставлено: <b>{sent}</b>\n"
+            f"🚫 Заблокировали бота: <b>{blocked}</b>\n"
+            f"⚠️ Прочие ошибки: <b>{failed}</b>",
+        )
+    except Exception:
         pass
 
 
@@ -462,9 +606,9 @@ async def render_stats_screen() -> tuple[str, InlineKeyboardMarkup]:
         f"• Активные алерты: <b>{active}</b> | Выкл/блок: <b>{muted}</b>\n"
         f"• Новых сегодня: <b>+{new_today}</b> | За 7 дней: <b>+{new_week}</b>\n\n"
         "👑 <b>VIP и монетизация:</b>\n"
-        f"• VIP (Stars/выданные): <b>{vip_top}</b>\n"
-        f"• VIP (Реферальные): <b>{vip_ref}</b>\n"
-        f"• Обычные: <b>{free_cnt}</b>\n"
+        f"• Платный VIP: <b>{vip_top}</b>\n"
+        f"• Бесплатный VIP (реф): <b>{vip_ref}</b>\n"
+        f"• Без VIP: <b>{free_cnt}</b>\n"
         f"• Оплат Stars: <b>{pay_cnt}</b> (всего <b>{stars_total} ⭐</b>, сегодня <b>+{stars_today} ⭐</b>)\n\n"
         "🔗 <b>Рефералы:</b>\n"
         f"• Подтверждённых приглашений: <b>{total_refs}</b>\n"
@@ -542,9 +686,15 @@ def main_menu_kb(user: dict) -> InlineKeyboardMarkup:
         if user["events_on"]
         else make_btn("🎉 События: ВЫКЛ", callback_data="toggle:events", style="danger")
     )
-    vip_btn_text = (
-        "👑 Мой VIP и Рефералы" if (user.get("vip_level") or 0) > 0 else "👑 Получить VIP (без задержки)"
-    )
+    webapp_url = build_webapp_url(user)
+    if webapp_url:
+        vip_btn = make_btn("💎 VIP и очередь алертов", web_app=WebAppInfo(url=webapp_url), style="success")
+    else:
+        vip_btn_text = (
+            "👑 Мой VIP и Рефералы" if (user.get("vip_level") or 0) > 0 else "👑 Получить VIP (без задержки)"
+        )
+        vip_btn = make_btn(vip_btn_text, callback_data="menu:vip")
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [make_btn("📦 Последний сток", callback_data="stock:all", style="primary")],
@@ -552,10 +702,23 @@ def main_menu_kb(user: dict) -> InlineKeyboardMarkup:
                 make_btn("💎 Редкости", callback_data="menu:rarities"),
                 make_btn("🏛 Локации", callback_data="menu:locations"),
             ],
-            [make_btn(vip_btn_text, callback_data="menu:vip")],
+            [vip_btn],
             [event_btn],
             [alert_btn],
         ]
+    )
+
+
+def vip_promo_text() -> str:
+    return (
+        "🆕 <b>Обновили VIP!</b>\n\n"
+        "Теперь всё про VIP — в одном удобном окне 💎\n\n"
+        "<b>Внутри видно:</b>\n"
+        "• кто получает алерты о яйцах <b>раньше</b> — и где в этой очереди стоишь ты;\n"
+        f"• 💎 <b>Платный VIP</b> — алерты раньше всех, <b>{VIP_PRICE_STARS} ⭐</b> один раз и навсегда;\n"
+        f"• ⭐ <b>Бесплатный VIP</b> — пригласи <b>{REF_TARGET} друзей</b>, и алерты будут приходить быстрее, чем обычным;\n"
+        "• сколько друзей ты уже пригласил.\n\n"
+        "Жми кнопку «💎 VIP» внизу 👇"
     )
 
 
@@ -585,9 +748,12 @@ def vip_menu_kb(user: dict) -> InlineKeyboardMarkup:
     ref_link = f"https://t.me/{BOT_USERNAME}?start=r{user['user_id']}"
     share_text = quote("Лови редкие Divine и Eternal яйца в Steal An Egg первым!")
     share_url = f"https://t.me/share/url?url={quote(ref_link)}&text={share_text}"
+    webapp_url = build_webapp_url(user)
 
     rows = []
-    if vip_level < 2:
+    if webapp_url:
+        rows.append([make_btn("💎 Открыть окно VIP", web_app=WebAppInfo(url=webapp_url), style="success")])
+    elif vip_level < 2:
         rows.append(
             [make_btn(f"⭐ Купить VIP за {VIP_PRICE_STARS} Stars", callback_data="buy:vip", style="success")]
         )
@@ -603,7 +769,7 @@ def terms_text() -> str:
         f"1. <b>Стоимость:</b> {VIP_PRICE_STARS} ⭐ (Telegram Stars), разовый платёж.\n"
         "2. <b>Срок действия:</b> навсегда, на всё время работы бота.\n"
         "3. <b>Что входит:</b> мгновенная отправка уведомлений без стандартной задержки "
-        "и первый приоритет в очереди рассылки.\n"
+        "и первый приоритет в очереди рассылки (даже раньше бесплатных VIP).\n"
         "4. <b>Активация:</b> происходит автоматически сразу после подтверждения оплаты Telegram.\n"
         "5. <b>Возврат и помощь:</b> если оплата прошла, но VIP не включился или возникла ошибка — "
         "напиши команду <code>/paysupport</code> и опиши проблему. Владелец бота (@wartrezlox) проверит "
@@ -735,6 +901,91 @@ async def cb_admin_stats(cb: CallbackQuery):
     await cb.answer("Статистика обновлена")
 
 
+@router.message(Command("sendupdate"))
+async def cmd_send_update(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    users = await get_all_users()
+    preview = (
+        f"👀 <b>Предпросмотр рассылки об обновлении</b> (получателей: <b>{len(users)}</b>):\n"
+        "──────────────\n"
+        f"{vip_promo_text()}\n"
+        "──────────────\n"
+        "<i>Вместе с сообщением у всех обновится нижняя клавиатура с кнопкой 💎 VIP.</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [make_btn(f"🚀 Разослать всем ({len(users)})", callback_data="admin:bcast_update", style="success")],
+            [make_btn("❌ Отмена", callback_data="admin:bcast_cancel", style="danger")],
+        ]
+    )
+    await message.answer(preview, reply_markup=kb, disable_web_page_preview=True)
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    text = (command.args or "").strip()
+    if not text:
+        await message.answer(
+            "📢 <b>Рассылка произвольного сообщения</b>\n\n"
+            "Напиши команду и текст в одном сообщении, например:\n"
+            "<code>/broadcast 🔥 Новый розыгрыш уже в канале @wartrezlox!</code>"
+        )
+        return
+
+    PENDING_BROADCAST[message.from_user.id] = text
+    users = await get_all_users()
+    preview = (
+        f"👀 <b>Предпросмотр рассылки</b> (получателей: <b>{len(users)}</b>):\n"
+        "──────────────\n"
+        f"{text}\n"
+        "──────────────"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [make_btn(f"🚀 Разослать всем ({len(users)})", callback_data="admin:bcast_custom", style="success")],
+            [make_btn("❌ Отмена", callback_data="admin:bcast_cancel", style="danger")],
+        ]
+    )
+    try:
+        await message.answer(preview, reply_markup=kb, disable_web_page_preview=True)
+    except TelegramBadRequest as e:
+        await message.answer(f"❌ Ошибка разметки HTML в тексте: {e}")
+
+
+@router.callback_query(F.data == "admin:bcast_update")
+async def cb_bcast_update(cb: CallbackQuery, bot: Bot):
+    if cb.from_user.id not in ADMIN_IDS:
+        return
+    await safe_edit(cb, "⏳ <b>Рассылка об обновлении запущена...</b>\nОтчёт придёт сюда по завершении.", None)
+    await cb.answer("Рассылка запущена")
+    asyncio.create_task(run_mass_broadcast(bot, cb.from_user.id, vip_promo_text(), refresh_kb=True))
+
+
+@router.callback_query(F.data == "admin:bcast_custom")
+async def cb_bcast_custom(cb: CallbackQuery, bot: Bot):
+    if cb.from_user.id not in ADMIN_IDS:
+        return
+    text = PENDING_BROADCAST.pop(cb.from_user.id, "")
+    if not text:
+        await cb.answer("Текст рассылки не найден, отправь /broadcast заново", show_alert=True)
+        return
+    await safe_edit(cb, "⏳ <b>Рассылка запущена...</b>\nОтчёт придёт сюда по завершении.", None)
+    await cb.answer("Рассылка запущена")
+    asyncio.create_task(run_mass_broadcast(bot, cb.from_user.id, text, refresh_kb=True))
+
+
+@router.callback_query(F.data == "admin:bcast_cancel")
+async def cb_bcast_cancel(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        return
+    PENDING_BROADCAST.pop(cb.from_user.id, None)
+    await safe_edit(cb, "❌ Рассылка отменена.", None)
+    await cb.answer("Отменено")
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, bot: Bot):
     uid = message.from_user.id
@@ -750,22 +1001,32 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
     sub = await is_subscribed(bot, uid)
     if sub:
         await try_credit_referral(bot, uid)
+        user = await get_or_create_user(uid)
 
     caption = welcome_text(sub)
     kb = welcome_kb(sub)
     photo = await get_welcome_photo()
 
+    sent_welcome = False
     if photo:
         try:
             await message.answer_photo(photo=photo, caption=caption, reply_markup=kb)
-            return
+            sent_welcome = True
         except Exception as e:
             print(f"⚠️ Не удалось отправить приветственное фото: {e}", flush=True)
 
-    await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
+    if not sent_welcome:
+        await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
+
+    if sub:
+        await message.answer(
+            "👇 Быстрое меню и окно <b>💎 VIP</b> закреплены внизу:",
+            reply_markup=bottom_kb(user),
+        )
 
 
 @router.message(Command("stock"))
+@router.message(F.text == "📦 Последний сток")
 async def cmd_stock(message: Message, bot: Bot):
     if not await is_subscribed(bot, message.from_user.id):
         await message.answer(welcome_text(False), reply_markup=welcome_kb(False), disable_web_page_preview=True)
@@ -774,14 +1035,76 @@ async def cmd_stock(message: Message, bot: Bot):
     await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
 
 
+@router.message(F.text == "🔔 Уведомления")
+async def kb_open_menu(message: Message, bot: Bot):
+    uid = message.from_user.id
+    if not await is_subscribed(bot, uid):
+        await message.answer(welcome_text(False), reply_markup=welcome_kb(False), disable_web_page_preview=True)
+        return
+    user = await get_or_create_user(uid)
+    await message.answer(main_menu_text(user), reply_markup=main_menu_kb(user), disable_web_page_preview=True)
+
+
+@router.message(F.text == "💎 Редкости")
+async def kb_open_rarities(message: Message, bot: Bot):
+    uid = message.from_user.id
+    if not await is_subscribed(bot, uid):
+        await message.answer(welcome_text(False), reply_markup=welcome_kb(False), disable_web_page_preview=True)
+        return
+    user = await get_or_create_user(uid)
+    await message.answer(
+        "💎 <b>Выбери редкости яиц</b>\n\nНажимай на кнопки, чтобы включить или выключить уведомления:",
+        reply_markup=rarities_kb(user),
+    )
+
+
+@router.message(F.text == "🏛 Локации")
+async def kb_open_locations(message: Message, bot: Bot):
+    uid = message.from_user.id
+    if not await is_subscribed(bot, uid):
+        await message.answer(welcome_text(False), reply_markup=welcome_kb(False), disable_web_page_preview=True)
+        return
+    user = await get_or_create_user(uid)
+    await message.answer(
+        "🏛 <b>Выбери локации</b>\n\nМожешь оставить «Все локации» или выбрать только нужные:",
+        reply_markup=locations_kb(user),
+    )
+
+
 @router.message(Command("vip"))
+@router.message(F.text == "💎 VIP")
 async def cmd_vip(message: Message, bot: Bot):
     uid = message.from_user.id
     if not await is_subscribed(bot, uid):
         await message.answer(welcome_text(False), reply_markup=welcome_kb(False), disable_web_page_preview=True)
         return
     user = await get_or_create_user(uid)
-    await message.answer(vip_menu_text(user), reply_markup=vip_menu_kb(user), disable_web_page_preview=True)
+    webapp_url = build_webapp_url(user)
+    if webapp_url:
+        await message.answer(
+            vip_promo_text(),
+            reply_markup=bottom_kb(user),
+            disable_web_page_preview=True,
+        )
+    else:
+        await message.answer(vip_menu_text(user), reply_markup=vip_menu_kb(user), disable_web_page_preview=True)
+
+
+@router.message(F.web_app_data)
+async def on_web_app_data(message: Message):
+    if message.web_app_data.data == "buy_vip":
+        user = await get_or_create_user(message.from_user.id)
+        if (user.get("vip_level") or 0) == 2:
+            await message.answer("👑 У тебя уже активирован максимальный VIP!")
+            return
+        await message.answer_invoice(
+            title="👑 VIP-доступ навсегда",
+            description="Мгновенные уведомления без задержки и первый приоритет в очереди рассылки Steal An Egg.",
+            payload="vip_stars_50",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label="VIP-доступ навсегда", amount=VIP_PRICE_STARS)],
+        )
 
 
 @router.message(Command("terms"))
@@ -856,13 +1179,18 @@ async def cmd_give_vip(message: Message, command: CommandObject, bot: Bot):
     target_id = int(arg) if arg else message.from_user.id
     await get_or_create_user(target_id)
     await update_user(target_id, vip_level=2)
-    await message.answer(f"👑 Выдан максимальный VIP пользователю <code>{target_id}</code>.")
+    target_user = await get_or_create_user(target_id)
+    await message.answer(
+        f"👑 Выдан максимальный VIP пользователю <code>{target_id}</code>.",
+        reply_markup=bottom_kb(target_user) if target_id == message.from_user.id else None,
+    )
     if target_id != message.from_user.id:
         try:
             await bot.send_message(
                 target_id,
                 "👑 <b>Администратор выдал тебе VIP-доступ навсегда!</b>\n\n"
                 "Теперь все уведомления приходят тебе первым в очереди, без задержки.",
+                reply_markup=bottom_kb(target_user),
             )
         except Exception:
             pass
@@ -879,7 +1207,11 @@ async def cmd_del_vip(message: Message, command: CommandObject):
     target_id = int(arg) if arg else message.from_user.id
     await get_or_create_user(target_id)
     await update_user(target_id, vip_level=0)
-    await message.answer(f"👤 VIP снят у пользователя <code>{target_id}</code>.")
+    target_user = await get_or_create_user(target_id)
+    await message.answer(
+        f"👤 VIP снят у пользователя <code>{target_id}</code>.",
+        reply_markup=bottom_kb(target_user) if target_id == message.from_user.id else None,
+    )
 
 
 # === ОБРАБОТЧИКИ КНОПОК ===
@@ -893,6 +1225,10 @@ async def cb_check_sub(cb: CallbackQuery, bot: Bot):
     await try_credit_referral(bot, uid)
     user = await get_or_create_user(uid)
     await safe_edit(cb, main_menu_text(user), main_menu_kb(user))
+    await cb.message.answer(
+        "👇 Быстрое меню и окно <b>💎 VIP</b> закреплены внизу:",
+        reply_markup=bottom_kb(user),
+    )
     await cb.answer("✅ Подписка подтверждена!")
 
 
@@ -913,11 +1249,20 @@ async def cb_vip(cb: CallbackQuery):
 @router.callback_query(F.data == "open:vip")
 async def cb_open_vip_new_msg(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
-    await cb.message.answer(
-        vip_menu_text(user),
-        reply_markup=vip_menu_kb(user),
-        disable_web_page_preview=True,
-    )
+    webapp_url = build_webapp_url(user)
+    if webapp_url:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [make_btn("💎 Открыть окно VIP", web_app=WebAppInfo(url=webapp_url), style="success")]
+            ]
+        )
+        await cb.message.answer(vip_promo_text(), reply_markup=kb, disable_web_page_preview=True)
+    else:
+        await cb.message.answer(
+            vip_menu_text(user),
+            reply_markup=vip_menu_kb(user),
+            disable_web_page_preview=True,
+        )
     await cb.answer()
 
 
@@ -936,10 +1281,7 @@ async def cb_buy_vip(cb: CallbackQuery):
 
     await cb.message.answer_invoice(
         title="👑 VIP-доступ навсегда",
-        description=(
-            "Мгновенные уведомления без задержки "
-            "и первый приоритет в очереди рассылки Steal An Egg."
-        ),
+        description="Мгновенные уведомления без задержки и первый приоритет в очереди рассылки Steal An Egg.",
         payload="vip_stars_50",
         provider_token="",
         currency="XTR",
@@ -962,9 +1304,9 @@ async def on_successful_payment(message: Message, bot: Bot):
         await record_payment(uid, payment.total_amount, payment.currency)
         user = await get_or_create_user(uid)
         await message.answer(
-            "👑 <b>Оплата прошла успешно! VIP активирован навсегда.</b>\n\n"
-            "Теперь все уведомления приходят тебе первым в очереди, без задержки.",
-            reply_markup=main_menu_kb(user),
+            "👑 <b>Оплата прошла успешно! Платный VIP активирован навсегда.</b>\n\n"
+            "Теперь все уведомления приходят тебе в самом начале очереди, без задержки.",
+            reply_markup=bottom_kb(user),
             disable_web_page_preview=True,
         )
 
@@ -1362,7 +1704,7 @@ async def broadcast_item(bot: Bot, item: dict):
             except Exception as e:
                 print(f"❌ Ошибка канала {ch}: {e}", flush=True)
 
-    # 2. Персональная рассылка по приоритету
+    # 2. Персональная рассылка по очереди: Платный VIP -> Бесплатный VIP -> Обычные
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users WHERE alerts_on = 1") as cur:
@@ -1383,9 +1725,12 @@ async def broadcast_item(bot: Bot, item: dict):
     if vip_paid:
         await send_batch(bot, vip_paid, vip_text, vip_markup)
     if vip_ref:
+        await asyncio.sleep(REF_VIP_DELAY)
         await send_batch(bot, vip_ref, vip_text, vip_markup)
     if free_users:
-        await asyncio.sleep(FREE_USER_DELAY)
+        remain = max(0, FREE_USER_DELAY - (REF_VIP_DELAY if vip_ref else 0))
+        if remain:
+            await asyncio.sleep(remain)
         free_text = format_post(item, delay_sec=VIP_EARLY_TEXT_SEC)
         free_markup = alert_kb(item, is_vip=False)
         await send_batch(bot, free_users, free_text, free_markup)
@@ -1497,6 +1842,7 @@ async def main():
     BOT_USERNAME = me.username or ""
 
     await setup_bot_menu(bot)
+    await ensure_vip_invoice_url(bot)
 
     dp = Dispatcher()
     dp.include_router(router)
